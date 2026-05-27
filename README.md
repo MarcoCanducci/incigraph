@@ -27,7 +27,8 @@ Three things, in order of expected use:
 pip install -e .
 
 # 2. Download the data deposit (one-time, ~110 MB)
-#    From Zenodo: https://zenodo.org/record/<RECORD_ID>
+#    From Zenodo: https://zenodo.org/record/20417249
+
 #    Expand into ./incigraph_data/
 ls incigraph_data/
 # incigraph_L1.parquet
