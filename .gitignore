@@ -1,0 +1,52 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- InciGraph-specific ---
+# Parquet deposit: too large for git; users download from Zenodo
+incigraph_data/
+parquet_out/
+*.parquet
+# Conversion intermediates
+_chunks/
+
+# Original xlsx tree: too large for git
+InciGraph/
+*.xlsx
+
+# Validation outputs (regenerate via scripts/validation/)
+validation_output/
+contrast_scan_output/
+sparsity_output/
+
+# Figure builds (the source scripts are committed; the rendered PDFs
+# can be regenerated)
+figures/*.png
+figures/*.pdf
+!figures/.gitkeep
+
+# Editor cruft
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

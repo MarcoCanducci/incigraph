@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: "If you use InciGraph, please cite both the code repository and the data deposit."
+title: "InciGraph"
+abstract: >-
+  Open infrastructure for ordered, intersectional, multimorbidity
+  incidence rates in UK primary care. Provides ~50 million precomputed
+  incidence-rate estimates across 64 long-term conditions, ordered
+  trajectories of length 1-3, and 15 demographic stratification schemes,
+  derived from CPRD data on ~14 million patients.
+type: software
+authors:
+  - family-names: "Last name"
+    given-names: "First name"
+    affiliation: "Institution"
+    # add ORCID where available
+    # orcid: https://orcid.org/0000-0000-0000-0000
+keywords:
+  - epidemiology
+  - multimorbidity
+  - primary-care
+  - incidence
+  - health-inequalities
+  - CPRD
+license: MIT
+repository-code: "https://github.com/<your-org>/incigraph"
+url: "https://incigraph.netlify.app/"
+version: 0.1.0
+date-released: 2026-05-27
+
+# Once the manuscript is published, fill in `preferred-citation` so
+# citation managers prefer the journal reference over the software
+# citation.
+# preferred-citation:
+#   type: article
+#   title: "[manuscript title]"
+#   authors: [...]
+#   doi: "10.xxxx/..."
+#   journal: "PLOS Digital Health"
+#   year: 2026
+
+# Data deposit citation
+references:
+  - type: data
+    title: "InciGraph parquet deposit"
+    authors:
+      - family-names: "Last name"
+        given-names: "First name"
+    year: 2026
+    doi: "10.5281/zenodo.<RECORD_ID>"

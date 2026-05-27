@@ -1,0 +1,117 @@
+# pyproject.toml — InciGraph package configuration
+#
+# This file is the single source of truth for the package's metadata,
+# dependencies, and build setup. With this in place:
+#   - `pip install -e .` makes the package editable-installable
+#   - `pip install incigraph` works once the package is on PyPI
+#   - `pytest` discovers and runs the test suite
+#   - `python -m build` produces a wheel for distribution
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incigraph"
+version = "0.1.0"
+description = "Open infrastructure for ordered, intersectional, multimorbidity incidence rates in UK primary care"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    {name = "InciGraph contributors"},
+]
+keywords = [
+    "epidemiology",
+    "multimorbidity",
+    "primary-care",
+    "incidence-rates",
+    "health-inequalities",
+    "CPRD",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Healthcare Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+# Runtime dependencies. Versions are lower bounds only -- we test against
+# the latest in CI but allow newer releases.
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# Used by the figure-building scripts and notebooks
+plots = [
+    "matplotlib>=3.7",
+]
+# Used by the validation scripts (open the original xlsx tree, ONLY needed
+# if you are running incigraph_to_parquet.py from raw source)
+xlsx = [
+    "openpyxl>=3.1",
+]
+# All optional dependencies at once (convenience target)
+all = [
+    "matplotlib>=3.7",
+    "openpyxl>=3.1",
+]
+# Development dependencies (tests + lint + build)
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "build>=1.0",
+]
+
+[project.urls]
+Homepage = "https://incigraph.netlify.app/"
+Repository = "https://github.com/<your-org>/incigraph"
+Documentation = "https://github.com/<your-org>/incigraph#readme"
+"Bug Tracker" = "https://github.com/<your-org>/incigraph/issues"
+"Data Deposit" = "https://zenodo.org/record/<DOI>"
+
+# ----------------------------------------------------------------------
+# setuptools configuration: tells the build system that the package lives
+# under src/incigraph (the modern "src layout")
+# ----------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["incigraph*"]
+
+# ----------------------------------------------------------------------
+# pytest configuration
+# ----------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take more than a second",
+    "needs_parquet: tests that require a real parquet deposit",
+]
+
+# ----------------------------------------------------------------------
+# ruff lint/format config (only used if the dev extras are installed)
+# ----------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["notebooks/*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # we manage line length manually in scientific code
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # allow `assert False` in tests

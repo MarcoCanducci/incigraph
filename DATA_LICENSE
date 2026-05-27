@@ -1,0 +1,38 @@
+# Data License
+
+The data files distributed alongside this codebase — the parquet files at
+the Zenodo deposit (incigraph_L1.parquet, incigraph_L2.parquet,
+incigraph_L3.parquet, incigraph_metadata.parquet, and the original xlsx
+tree) — are released under the **Creative Commons Attribution 4.0
+International License (CC-BY-4.0)**, separately from the source code's MIT
+license.
+
+In short: you may share and adapt the data for any purpose, including
+commercially, provided you give appropriate credit. The legal text is at
+<https://creativecommons.org/licenses/by/4.0/legalcode>.
+
+## Citation
+
+Please cite this work whenever you use the data:
+
+> [author list] (2026). InciGraph: open infrastructure for ordered,
+> intersectional, multimorbidity incidence rates in UK primary care.
+> [journal / repository], DOI [DOI].
+
+See `CITATION.cff` for the machine-readable form.
+
+## Data provenance
+
+The estimates were derived from de-identified CPRD primary-care data under
+ISAC protocol [protocol number]. The published deposit contains ONLY
+aggregated incidence rates and confidence intervals at the demographic-
+stratum level; no individual-level data, identifiers, or low-count cells
+violating disclosure-control rules are included.
+
+## Disclosure control
+
+Cells with fewer than 5 incident events have their numerator set to NaN
+in the parquet. This follows CPRD's standard suppression rule. Users
+re-aggregating across strata may legitimately recompute totals that
+exceed the suppression threshold; this is acceptable practice and does
+not constitute re-identification.
