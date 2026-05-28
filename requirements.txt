@@ -1,0 +1,16 @@
+# Runtime dependencies for the InciGraph Streamlit app.
+#
+# Streamlit Community Cloud reads this file to build the app environment.
+# For local development, `pip install -e ".[plots]"` covers the same set
+# plus the package itself.
+#
+# The package itself is installed from the repo (Community Cloud installs
+# the repo root automatically when a pyproject.toml is present); these are
+# the third-party libraries it needs at runtime.
+
+streamlit>=1.30
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14.0
+scipy>=1.10
+matplotlib>=3.7
