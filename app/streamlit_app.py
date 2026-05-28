@@ -105,6 +105,82 @@ def _resolve_data_dir(sidebar_override):
     return None
 
 
+# The parquet deposit on Zenodo (DOI 10.5281/zenodo.20417249).
+# We download the four files directly from their stable record URLs. The
+# MD5 checksums are taken from the published record so we can verify each
+# download.
+ZENODO_RECORD_ID = "20417249"
+ZENODO_FILES = {
+    "incigraph_L1.parquet":       "08dfb8d2842513a6cfc761a9b1307fc9",
+    "incigraph_L2.parquet":       "7884588e7b267ee01cc751d7839181ff",
+    "incigraph_L3.parquet":       "e924a952e9db99bdcfa2a66824464170",
+    "incigraph_metadata.parquet": "8d0b7ae100db52abacf94bf358b8a1bf",
+}
+
+
+def _zenodo_url(fname: str) -> str:
+    return f"https://zenodo.org/records/{ZENODO_RECORD_ID}/files/{fname}?download=1"
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_data_from_zenodo(record_id: str) -> str | None:
+    """Download the parquet deposit from Zenodo into a local cache folder,
+    once per container. Returns the cache dir as a string, or None on failure.
+
+    Uses @st.cache_resource so the download runs only once per app session.
+    Each file is verified against its published MD5 checksum.
+    """
+    import hashlib
+
+    import requests
+
+    cache_dir = Path(__file__).resolve().parent.parent / "incigraph_data"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _md5_ok(path: Path, expected: str) -> bool:
+        h = hashlib.md5()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest() == expected
+
+    # If every expected file is already present AND valid, we're done.
+    if all((cache_dir / f).exists() and _md5_ok(cache_dir / f, md5)
+           for f, md5 in ZENODO_FILES.items()):
+        return str(cache_dir)
+
+    progress = st.progress(0.0, text="Downloading data from Zenodo...")
+    files = list(ZENODO_FILES.items())
+    for i, (fname, expected_md5) in enumerate(files):
+        target = cache_dir / fname
+        # skip if already downloaded and valid
+        if target.exists() and _md5_ok(target, expected_md5):
+            progress.progress((i + 1) / len(files),
+                              text=f"{fname} already cached")
+            continue
+        url = _zenodo_url(fname)
+        try:
+            with requests.get(url, stream=True, timeout=600) as resp:
+                resp.raise_for_status()
+                with open(target, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        fh.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Failed to download {fname} from Zenodo: {e}")
+            return None
+        # verify checksum
+        if not _md5_ok(target, expected_md5):
+            target.unlink(missing_ok=True)
+            st.error(
+                f"Downloaded {fname} but its checksum did not match the "
+                "published value. The file may be corrupt; please retry."
+            )
+            return None
+        progress.progress((i + 1) / len(files), text=f"Downloaded {fname}")
+    progress.empty()
+    return str(cache_dir)
+
+
 @st.cache_data(show_spinner=False)
 def _available_strats(data_dir_str):
     ig.set_data_dir(data_dir_str)
@@ -168,10 +244,19 @@ sidebar_path = st.sidebar.text_input(
 )
 data_dir = _resolve_data_dir(sidebar_path or None)
 if data_dir is None:
+    # No local data found. Download the deposit from Zenodo (cached, once).
+    with st.spinner("First run: fetching the data deposit from Zenodo "
+                    "(~110 MB, one-time)..."):
+        downloaded = _ensure_data_from_zenodo(ZENODO_RECORD_ID)
+    if downloaded:
+        data_dir = Path(downloaded)
+
+if data_dir is None:
     st.error(
-        "Could not find the InciGraph data. Place the parquet files in an "
-        "`incigraph_data/` folder next to the repository, or type the path "
-        "in the sidebar."
+        "Could not find or download the InciGraph data. Either place the "
+        "parquet files in an `incigraph_data/` folder next to the repository, "
+        "type a path in the sidebar, or check that the Zenodo record "
+        f"(10.5281/zenodo.{ZENODO_RECORD_ID}) is reachable."
     )
     st.stop()
 
