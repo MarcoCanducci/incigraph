@@ -136,7 +136,7 @@ If you use InciGraph in academic work, please cite both the data deposit and the
   author    = {[authors]},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.<RECORD_ID>}
+  doi       = {10.5281/zenodo.20417249}
 }
 ```
 
