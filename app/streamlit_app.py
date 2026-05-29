@@ -298,21 +298,42 @@ IDX_TO_DISPLAY = {i + 1: disp for i, disp in enumerate(DISEASE_DISPLAY)}
 
 
 # ======================================================================
-# Group builder
+# Helpers used by both modes
 # ======================================================================
-def group_builder(side_key, default_strat_idx=0):
-    """Render one group's controls and return its pooled counts."""
-    strat = st.selectbox(
-        "Break down by",
-        STRATS,
-        index=default_strat_idx,
-        format_func=strat_label,
-        key=f"{side_key}_strat",
-    )
+def pick_sequence(key_prefix: str, default_first: str = "Hypertension"
+                  ) -> list[int]:
+    """Render three cascading disease pickers and return the chosen
+    sequence as a list of 1-based canonical indices.
 
-    seq = tuple(st.session_state["current_seq"])
-    # Build the canonical sequence string the parquet stores: '0 X' for
-    # length 1, '0 X Y' for length 2, '0 X Y Z' for length 3.
+    `key_prefix` namespaces the widgets so multiple sequence pickers can
+    co-exist on the page without colliding."""
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        d1 = st.selectbox(
+            "First condition", DISEASE_DISPLAY,
+            index=DISEASE_DISPLAY.index(default_first)
+            if default_first in DISEASE_DISPLAY else 0,
+            key=f"{key_prefix}_d1")
+    with c2:
+        d2 = st.selectbox(
+            "Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
+            index=0, key=f"{key_prefix}_d2")
+    with c3:
+        d3 = st.selectbox(
+            "Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
+            index=0, key=f"{key_prefix}_d3",
+            disabled=(d2 == "\u2014 none \u2014"))
+    seq = [NAME_TO_IDX[d1]]
+    if d2 != "\u2014 none \u2014":
+        seq.append(NAME_TO_IDX[d2])
+        if d3 != "\u2014 none \u2014":
+            seq.append(NAME_TO_IDX[d3])
+    return seq
+
+
+def fetch_sequence_rows(seq: list[int], strat: str) -> pd.DataFrame | None:
+    """Read parquet rows for one (sequence, stratification) tuple. Returns
+    a DataFrame on success or None on failure (with an inline error)."""
     sequence_str = "0 " + " ".join(str(i) for i in seq)
     try:
         df = _read_sequence_filtered(
@@ -325,11 +346,22 @@ def group_builder(side_key, default_strat_idx=0):
             raise ValueError(
                 f"No rows in the deposit for sequence {sequence_str!r} with "
                 f"stratification {strat!r}.")
+        return df
     except Exception as e:  # noqa: BLE001
         st.markdown(f'<div class="sparse">No data: {e}</div>',
                     unsafe_allow_html=True)
         return None
 
+
+def pool_demographics(df: pd.DataFrame, strat: str, key_prefix: str
+                      ) -> dict | None:
+    """Render the multiselects for each axis of `strat` and return the
+    pooled counts.
+
+    Used by both modes: returns {num, pt, label, n_cells, strat}.
+    `key_prefix` is the widget-key namespace (e.g. 'mode1_num',
+    'mode2_shared'). Default selections pick the first value of each axis.
+    """
     axes = [] if strat == "NONE" else strat.split("+")
     selections = {}
     for axis in axes:
@@ -352,10 +384,9 @@ def group_builder(side_key, default_strat_idx=0):
             "meaningful."
         )
         picked = st.multiselect(
-            AXIS_LABEL.get(axis, axis),
-            options,
+            AXIS_LABEL.get(axis, axis), options,
             default=options[:1],
-            key=f"{side_key}_{axis}",
+            key=f"{key_prefix}_{axis}",
             help=help_txt,
         )
         if not poolable and len(picked) > 1:
@@ -387,89 +418,39 @@ def group_builder(side_key, default_strat_idx=0):
 
     sel = df[mask]
     n_cells = len(sel)
-    num = float(sel["numerator"].fillna(0).sum())
-    pt = float(sel["denominator"].fillna(0).sum())
-    label = ", ".join(label_bits) if label_bits else "everyone"
-
     if n_cells == 0:
         st.markdown('<div class="sparse">No cells match this selection.</div>',
                     unsafe_allow_html=True)
         return None
+    num = float(sel["numerator"].fillna(0).sum())
+    pt = float(sel["denominator"].fillna(0).sum())
+    label = ", ".join(label_bits) if label_bits else "everyone"
     st.caption(f"{n_cells} cell(s) pooled \u00b7 {int(num):,} events "
                f"over {pt:,.0f} person-years")
     return {"num": num, "pt": pt, "label": label, "n_cells": n_cells,
             "strat": strat}
 
 
-# ======================================================================
-# Main
-# ======================================================================
-st.title("InciGraph contrast tool")
-st.markdown(
-    "Compare the incidence of a disease trajectory between two demographic "
-    "groups. Each group can fix some characteristics and pool across others."
-)
+def render_result(g_num: dict, g_den: dict, mode: str,
+                  endpoint_num: str | None = None,
+                  endpoint_den: str | None = None,
+                  shared_group_label: str | None = None,
+                  traj: str | None = None,
+                  traj_num: str | None = None,
+                  traj_den: str | None = None) -> None:
+    """Render the IRR result block (metrics + sentence + rates + download).
 
-st.subheader("1. Choose a trajectory")
-c1, c2, c3 = st.columns(3)
-with c1:
-    d1 = st.selectbox("First condition", DISEASE_DISPLAY,
-                      index=DISEASE_DISPLAY.index("Hypertension")
-                      if "Hypertension" in DISEASE_DISPLAY else 0,
-                      key="seq_d1")
-with c2:
-    d2 = st.selectbox("Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
-                      index=0, key="seq_d2")
-with c3:
-    d3 = st.selectbox("Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
-                      index=0, key="seq_d3",
-                      disabled=(d2 == "\u2014 none \u2014"))
-
-seq = [NAME_TO_IDX[d1]]
-if d2 != "\u2014 none \u2014":
-    seq.append(NAME_TO_IDX[d2])
-    if d3 != "\u2014 none \u2014":
-        seq.append(NAME_TO_IDX[d3])
-st.session_state["current_seq"] = seq
-
-endpoint = IDX_TO_DISPLAY[seq[-1]]
-traj = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq)
-st.markdown(f"**Trajectory:** {traj}")
-if len(seq) > 1:
-    prior = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq[:-1])
-    st.caption(f"Incidence of {endpoint} after {prior}.")
-else:
-    st.caption(f"Incidence of {endpoint}.")
-
-st.subheader("2. Define the two groups")
-col_num, col_den = st.columns(2)
-with col_num:
-    st.markdown('<div class="grp-num"><b>Numerator group</b> '
-                "(the rate on top of the ratio)</div>",
-                unsafe_allow_html=True)
-    default_num = STRATS.index("IMD") if "IMD" in STRATS else 0
-    g_num = group_builder("num", default_num)
-with col_den:
-    st.markdown('<div class="grp-den"><b>Denominator group</b> '
-                "(the reference rate)</div>",
-                unsafe_allow_html=True)
-    default_den = STRATS.index("IMD") if "IMD" in STRATS else 0
-    g_den = group_builder("den", default_den)
-
-st.subheader("3. Result")
-if g_num is None or g_den is None:
-    st.info("Complete both group definitions above to see the contrast.")
-elif g_num["num"] < 1 or g_den["num"] < 1:
-    st.markdown(
-        '<div class="sparse">One of the groups has no events, so the rate '
-        "ratio is undefined. Widen the selection or pool more cells.</div>",
-        unsafe_allow_html=True)
-else:
-    if g_num["strat"] != g_den["strat"]:
+    `mode` is 'demographics' (mode 1: same trajectory, two groups) or
+    'sequences' (mode 2: two trajectories, same group)."""
+    if g_num is None or g_den is None:
+        st.info("Complete the inputs above to see the contrast.")
+        return
+    if g_num["num"] < 1 or g_den["num"] < 1:
         st.markdown(
-            '<div class="caveat">The two groups use different breakdown '
-            "schemes. That is allowed, but make sure the comparison is "
-            "meaningful.</div>", unsafe_allow_html=True)
+            '<div class="sparse">One of the sides has no events, so the '
+            "rate ratio is undefined. Widen the selection or pool more "
+            "cells.</div>", unsafe_allow_html=True)
+        return
 
     r = irr_ci(g_num["num"], g_num["pt"], g_den["num"], g_den["pt"])
 
@@ -492,10 +473,17 @@ else:
         st.caption("p-value (unadjusted)")
 
     times = "\u00d7"
-    st.markdown(
-        f"In **{g_num['label']}**, the incidence of {endpoint} is "
-        f"**{r['irr']:.2f}{times}** that in **{g_den['label']}**."
-    )
+    if mode == "demographics":
+        st.markdown(
+            f"In **{g_num['label']}**, the incidence of {endpoint_num} is "
+            f"**{r['irr']:.2f}{times}** that in **{g_den['label']}**."
+        )
+    else:  # mode == 'sequences'
+        st.markdown(
+            f"In **{shared_group_label}**, the incidence of "
+            f"**{traj_num}** is **{r['irr']:.2f}{times}** that of "
+            f"**{traj_den}**."
+        )
 
     rate_num = g_num["num"] / g_num["pt"] * 1e5
     rate_den = g_den["num"] / g_den["pt"] * 1e5
@@ -506,23 +494,250 @@ else:
         f"({int(g_den['num']):,} events)."
     )
 
-    summary = pd.DataFrame([{
-        "trajectory": traj,
-        "numerator_group": g_num["label"],
-        "numerator_stratification": g_num["strat"],
+    # downloadable summary
+    if mode == "demographics":
+        row = {
+            "mode": "compare demographic groups",
+            "trajectory": traj,
+            "numerator_group": g_num["label"],
+            "numerator_stratification": g_num["strat"],
+            "denominator_group": g_den["label"],
+            "denominator_stratification": g_den["strat"],
+        }
+    else:
+        row = {
+            "mode": "compare sequences",
+            "shared_group": shared_group_label,
+            "shared_stratification": g_num["strat"],
+            "numerator_trajectory": traj_num,
+            "denominator_trajectory": traj_den,
+        }
+    row.update({
         "numerator_events": int(g_num["num"]),
         "numerator_person_years": g_num["pt"],
-        "denominator_group": g_den["label"],
-        "denominator_stratification": g_den["strat"],
         "denominator_events": int(g_den["num"]),
         "denominator_person_years": g_den["pt"],
         "irr": r["irr"], "lower_95ci": r["lower_ci"],
         "upper_95ci": r["upper_ci"], "p_value": r["p_raw"],
-    }])
+    })
+    summary = pd.DataFrame([row])
     st.download_button(
         "Download this result (CSV)",
         summary.to_csv(index=False).encode("utf-8"),
         file_name="incigraph_contrast.csv", mime="text/csv",
     )
+
+
+# ======================================================================
+# Main
+# ======================================================================
+st.title("InciGraph contrast tool")
+st.markdown(
+    "Compare incidence rates between groups or between sequences. "
+    "Pick a mode below to get started."
+)
+
+mode = st.radio(
+    "What do you want to compare?",
+    ["demographics", "sequences"],
+    format_func=lambda m: {
+        "demographics":
+            "Compare demographic groups (one trajectory, two groups)",
+        "sequences":
+            "Compare sequences (one demographic group, two trajectories)",
+    }[m],
+    key="mode",
+    horizontal=False,
+)
+st.divider()
+
+if mode == "demographics":
+    # ---- Mode 1: today's flow, refactored to use the helpers ----
+    st.subheader("1. Choose a trajectory")
+    seq = pick_sequence("m1_seq")
+    st.session_state["current_seq"] = seq
+
+    endpoint = IDX_TO_DISPLAY[seq[-1]]
+    traj = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq)
+    st.markdown(f"**Trajectory:** {traj}")
+    if len(seq) > 1:
+        prior = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq[:-1])
+        st.caption(f"Incidence of {endpoint} after {prior}.")
+    else:
+        st.caption(f"Incidence of {endpoint}.")
+
+    st.subheader("2. Define the two groups")
+    default_strat = STRATS.index("IMD") if "IMD" in STRATS else 0
+
+    col_num, col_den = st.columns(2)
+    with col_num:
+        st.markdown('<div class="grp-num"><b>Numerator group</b> '
+                    "(the rate on top of the ratio)</div>",
+                    unsafe_allow_html=True)
+        strat_num = st.selectbox("Break down by", STRATS,
+                                  index=default_strat,
+                                  format_func=strat_label,
+                                  key="m1_num_strat")
+        df_num = fetch_sequence_rows(seq, strat_num)
+        g_num = (pool_demographics(df_num, strat_num, "m1_num")
+                 if df_num is not None else None)
+    with col_den:
+        st.markdown('<div class="grp-den"><b>Denominator group</b> '
+                    "(the reference rate)</div>",
+                    unsafe_allow_html=True)
+        strat_den = st.selectbox("Break down by", STRATS,
+                                  index=default_strat,
+                                  format_func=strat_label,
+                                  key="m1_den_strat")
+        df_den = fetch_sequence_rows(seq, strat_den)
+        g_den = (pool_demographics(df_den, strat_den, "m1_den")
+                 if df_den is not None else None)
+
+    st.subheader("3. Result")
+    if g_num is not None and g_den is not None \
+            and g_num["strat"] != g_den["strat"]:
+        st.markdown(
+            '<div class="caveat">The two groups use different breakdown '
+            "schemes. That is allowed, but make sure the comparison is "
+            "meaningful.</div>", unsafe_allow_html=True)
+    render_result(g_num, g_den, mode="demographics",
+                  endpoint_num=endpoint, traj=traj)
+
+else:
+    # ---- Mode 2: same group, two trajectories ----
+    st.subheader("1. Choose the demographic group")
+    st.caption(
+        "These characteristics are held the same for both trajectories. "
+        "Pick the stratification scheme and the values that define the "
+        "group you're studying."
+    )
+    default_strat = STRATS.index("IMD") if "IMD" in STRATS else 0
+    shared_strat = st.selectbox(
+        "Break down by", STRATS,
+        index=default_strat, format_func=strat_label,
+        key="m2_strat",
+    )
+
+    st.subheader("2. Choose the two trajectories to compare")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown('<div class="grp-num"><b>Numerator trajectory</b></div>',
+                    unsafe_allow_html=True)
+        seq_a = pick_sequence("m2_seqA", default_first="Hypertension")
+        traj_a = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq_a)
+        st.markdown(f"&nbsp;&nbsp;{traj_a}", unsafe_allow_html=True)
+    with col_b:
+        st.markdown('<div class="grp-den"><b>Denominator trajectory</b></div>',
+                    unsafe_allow_html=True)
+        seq_b = pick_sequence("m2_seqB", default_first="Hypertension")
+        traj_b = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq_b)
+        st.markdown(f"&nbsp;&nbsp;{traj_b}", unsafe_allow_html=True)
+
+    if seq_a == seq_b:
+        st.info("The two trajectories are identical \u2014 the result will "
+                "trivially be 1.0. Change one of them to get a meaningful "
+                "contrast.")
+
+    # Fetch each trajectory's data under the shared stratification
+    df_a = fetch_sequence_rows(seq_a, shared_strat)
+    df_b = fetch_sequence_rows(seq_b, shared_strat)
+    if df_a is None or df_b is None:
+        st.stop()
+
+    st.subheader("3. Refine the demographic group")
+    st.caption(
+        "Pick one value to fix an axis, or several to pool. The same "
+        "selections are applied to both trajectories."
+    )
+    # The two DataFrames share the schema (same stratification), so the
+    # available values for each axis should be identical. We render one
+    # set of multiselects and apply the resulting filter to both sides.
+    # Using df_a as the "options source"; if any value is missing in
+    # df_b the pooled sum simply contributes zero, which is correct.
+    g_shared_label_holder = []
+
+    # Render the demographic pickers ONCE, build the mask, apply to BOTH frames
+    axes = [] if shared_strat == "NONE" else shared_strat.split("+")
+    selections = {}
+    for axis in axes:
+        col = AXIS_COL[axis]
+        if col not in df_a.columns:
+            continue
+        if col == "imd":
+            raw_vals = sorted(v for v in df_a["imd"].dropna().unique())
+            options = [f"{int(v)}" for v in raw_vals]
+            if df_a.get("imd_missing", pd.Series(dtype=bool)).any():
+                options.append("missing")
+        else:
+            options = sorted(str(v) for v in df_a[col].dropna().unique())
+        poolable = axis in POOLABLE_OK
+        help_txt = (
+            "Pick one value to fix it, or several to pool them."
+            if poolable else
+            "Pick one value. Pooling several categories here is rarely "
+            "meaningful.")
+        picked = st.multiselect(
+            AXIS_LABEL.get(axis, axis), options,
+            default=options[:1],
+            key=f"m2_shared_{axis}", help=help_txt)
+        if not poolable and len(picked) > 1:
+            st.markdown(
+                f'<div class="caveat">Pooling several '
+                f"{AXIS_LABEL[axis].lower()} categories is unusual.</div>",
+                unsafe_allow_html=True)
+        selections[axis] = picked
+
+    def _apply_mask_and_pool(df: pd.DataFrame) -> tuple[float, float, int]:
+        mask = pd.Series(True, index=df.index)
+        for axis, picked in selections.items():
+            col = AXIS_COL[axis]
+            if not picked:
+                continue
+            if col == "imd":
+                wanted = [float(v) for v in picked if v != "missing"]
+                sub = df["imd"].isin(wanted)
+                if "missing" in picked:
+                    sub = sub | df.get("imd_missing", False)
+                mask &= sub
+            else:
+                mask &= df[col].astype(str).isin(picked)
+        sel = df[mask]
+        n = float(sel["numerator"].fillna(0).sum())
+        pt = float(sel["denominator"].fillna(0).sum())
+        return n, pt, len(sel)
+
+    label_bits = []
+    for axis, picked in selections.items():
+        if not picked:
+            label_bits.append(f"all {AXIS_LABEL[axis].lower()}")
+        elif AXIS_COL[axis] == "imd":
+            label_bits.append(f"IMD {'+'.join(picked)}")
+        else:
+            label_bits.append(f"{AXIS_LABEL[axis]} {'+'.join(picked)}")
+    shared_label = ", ".join(label_bits) if label_bits else "everyone"
+
+    num_a, pt_a, ncells_a = _apply_mask_and_pool(df_a)
+    num_b, pt_b, ncells_b = _apply_mask_and_pool(df_b)
+
+    st.caption(
+        f"For trajectory **{traj_a}**: {ncells_a} cell(s), {int(num_a):,} "
+        f"events over {pt_a:,.0f} person-years."
+    )
+    st.caption(
+        f"For trajectory **{traj_b}**: {ncells_b} cell(s), {int(num_b):,} "
+        f"events over {pt_b:,.0f} person-years."
+    )
+
+    g_a = ({"num": num_a, "pt": pt_a, "label": shared_label,
+            "n_cells": ncells_a, "strat": shared_strat}
+           if ncells_a > 0 else None)
+    g_b = ({"num": num_b, "pt": pt_b, "label": shared_label,
+            "n_cells": ncells_b, "strat": shared_strat}
+           if ncells_b > 0 else None)
+
+    st.subheader("4. Result")
+    render_result(g_a, g_b, mode="sequences",
+                  shared_group_label=shared_label,
+                  traj_num=traj_a, traj_den=traj_b)
 
 st.markdown(CAVEAT_HTML, unsafe_allow_html=True)
