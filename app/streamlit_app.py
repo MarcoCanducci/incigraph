@@ -38,7 +38,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-import incigraph as ig
 from incigraph.ci import irr_ci
 from incigraph.disease_index import DISEASE_NAMES
 
@@ -83,32 +82,28 @@ st.markdown(
 # ======================================================================
 # Data resolution + cached loaders
 # ======================================================================
-def _resolve_data_dir(sidebar_override):
-    if sidebar_override:
-        p = Path(sidebar_override)
-        if p.exists():
-            return p
-    try:
-        if "INCIGRAPH_DATA" in st.secrets:
-            p = Path(st.secrets["INCIGRAPH_DATA"])
-            if p.exists():
-                return p
-    except Exception:
-        pass
-    env = os.environ.get("INCIGRAPH_DATA")
-    if env and Path(env).exists():
-        return Path(env)
-    here = Path(__file__).resolve().parent.parent
-    candidate = here / "incigraph_data"
-    if candidate.exists():
-        return candidate
-    return None
+# ======================================================================
+# Data resolution: direct reads from Zenodo with pyarrow filter pushdown
+# ======================================================================
+#
+# Why not download the files locally?
+# ---------------------------------------
+# Streamlit Community Cloud's free tier has a memory cap around 1 GB. The
+# full L3 parquet (94 MB on disk) decompresses to roughly 1.5 GB in memory
+# once loaded into pandas, which OOM-kills the container. Downloading the
+# files to local disk first only delays the problem -- the moment any user
+# calls load_estimates(3) (e.g. picks a length-3 sequence), the load fills
+# memory and the worker is killed.
+#
+# The solution: read directly from the Zenodo file URLs with pyarrow's
+# filter pushdown enabled. For a single contrast query, this fetches only
+# the row groups containing the relevant sequence (typically a few MB),
+# never holds more than a few thousand rows in memory, and never writes
+# to local disk.
+#
+# Streamlit's @st.cache_data wraps the actual reads, so repeated queries
+# against the same sequence are instant (the row-group bytes are cached).
 
-
-# The parquet deposit on Zenodo (DOI 10.5281/zenodo.20417249).
-# We download the four files directly from their stable record URLs. The
-# MD5 checksums are taken from the published record so we can verify each
-# download.
 ZENODO_RECORD_ID = "20417249"
 ZENODO_FILES = {
     "incigraph_L1.parquet":       "08dfb8d2842513a6cfc761a9b1307fc9",
@@ -122,75 +117,100 @@ def _zenodo_url(fname: str) -> str:
     return f"https://zenodo.org/records/{ZENODO_RECORD_ID}/files/{fname}?download=1"
 
 
-@st.cache_resource(show_spinner=False)
-def _ensure_data_from_zenodo(record_id: str) -> str | None:
-    """Download the parquet deposit from Zenodo into a local cache folder,
-    once per container. Returns the cache dir as a string, or None on failure.
+def _local_data_dir() -> Path | None:
+    """If the user is running locally and has the parquets on disk, prefer
+    that. Returns the local dir or None if not present."""
+    try:
+        if "INCIGRAPH_DATA" in st.secrets:
+            p = Path(st.secrets["INCIGRAPH_DATA"])
+            if p.exists():
+                return p
+    except Exception:
+        pass
+    env = os.environ.get("INCIGRAPH_DATA")
+    if env and Path(env).exists():
+        return Path(env)
+    here = Path(__file__).resolve().parent.parent
+    candidate = here / "incigraph_data"
+    if candidate.exists() and any(candidate.glob("incigraph_L*.parquet")):
+        return candidate
+    return None
 
-    Uses @st.cache_resource so the download runs only once per app session.
-    Each file is verified against its published MD5 checksum.
-    """
-    import hashlib
 
-    import requests
-
-    cache_dir = Path(__file__).resolve().parent.parent / "incigraph_data"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    def _md5_ok(path: Path, expected: str) -> bool:
-        h = hashlib.md5()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest() == expected
-
-    # If every expected file is already present AND valid, we're done.
-    if all((cache_dir / f).exists() and _md5_ok(cache_dir / f, md5)
-           for f, md5 in ZENODO_FILES.items()):
-        return str(cache_dir)
-
-    progress = st.progress(0.0, text="Downloading data from Zenodo...")
-    files = list(ZENODO_FILES.items())
-    for i, (fname, expected_md5) in enumerate(files):
-        target = cache_dir / fname
-        # skip if already downloaded and valid
-        if target.exists() and _md5_ok(target, expected_md5):
-            progress.progress((i + 1) / len(files),
-                              text=f"{fname} already cached")
-            continue
-        url = _zenodo_url(fname)
-        try:
-            with requests.get(url, stream=True, timeout=600) as resp:
-                resp.raise_for_status()
-                with open(target, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=1 << 20):
-                        fh.write(chunk)
-        except Exception as e:  # noqa: BLE001
-            st.error(f"Failed to download {fname} from Zenodo: {e}")
-            return None
-        # verify checksum
-        if not _md5_ok(target, expected_md5):
-            target.unlink(missing_ok=True)
-            st.error(
-                f"Downloaded {fname} but its checksum did not match the "
-                "published value. The file may be corrupt; please retry."
-            )
-            return None
-        progress.progress((i + 1) / len(files), text=f"Downloaded {fname}")
-    progress.empty()
-    return str(cache_dir)
+def _source_for(fname: str, local_dir: Path | None) -> str:
+    """Return a path or URL to read `fname` from. Prefer local file if
+    present (no network), otherwise the Zenodo URL."""
+    if local_dir is not None and (local_dir / fname).exists():
+        return str(local_dir / fname)
+    return _zenodo_url(fname)
 
 
 @st.cache_data(show_spinner=False)
-def _available_strats(data_dir_str):
-    ig.set_data_dir(data_dir_str)
-    return ig.available_stratifications()
+def _load_metadata(_local_dir_str: str | None) -> pd.DataFrame:
+    """Load the small metadata parquet (~1 MB). Cached for the session."""
+    import pyarrow.parquet as pq
+    source = _source_for("incigraph_metadata.parquet",
+                         Path(_local_dir_str) if _local_dir_str else None)
+    if source.startswith("http"):
+        import fsspec
+        fs = fsspec.filesystem("https")
+        with fs.open(source, mode="rb") as fh:
+            return pq.read_table(fh).to_pandas()
+    return pq.read_table(source).to_pandas()
 
 
-@st.cache_data(show_spinner=True)
-def _get_sequence(data_dir_str, sequence, stratification):
-    ig.set_data_dir(data_dir_str)
-    return ig.get_sequence(list(sequence), stratification=stratification)
+@st.cache_data(show_spinner=False)
+def _available_strats_from_l1(_local_dir_str: str | None) -> list[str]:
+    """Read the stratification_key column of L1 (smallest data file) to
+    enumerate the available schemes. This is one column over ~50K rows --
+    less than 100 KB of data over the network."""
+    import pyarrow.parquet as pq
+    source = _source_for("incigraph_L1.parquet",
+                         Path(_local_dir_str) if _local_dir_str else None)
+    if source.startswith("http"):
+        import fsspec
+        fs = fsspec.filesystem("https")
+        with fs.open(source, mode="rb") as fh:
+            tbl = pq.read_table(fh, columns=["stratification_key"])
+    else:
+        tbl = pq.read_table(source, columns=["stratification_key"])
+    keys = tbl.column("stratification_key").to_pylist()
+    return sorted({str(k) for k in keys if k is not None})
+
+
+@st.cache_data(show_spinner="Fetching data...")
+def _read_sequence_filtered(sequence_length: int, sequence: str,
+                            stratification: str,
+                            _local_dir_str: str | None) -> pd.DataFrame:
+    """Read only the rows matching this (sequence, stratification) tuple,
+    using pyarrow's filter pushdown. The two equality filters become
+    row-group statistics pruning at the parquet layer, so we typically
+    fetch only a few MB even from the 94 MB L3 file.
+
+    Streamlit's @st.cache_data caches the result, so repeated queries
+    against the same sequence are instant.
+    """
+    import pyarrow.parquet as pq
+
+    fname = f"incigraph_L{sequence_length}.parquet"
+    source = _source_for(fname,
+                         Path(_local_dir_str) if _local_dir_str else None)
+    # Only the columns we actually need for the contrast UI.
+    cols = ["sequence", "stratification_key", "target_disease_idx",
+            "target_disease_short", "ethnicity", "sex",
+            "imd", "imd_missing", "age_catg",
+            "numerator", "denominator",
+            "incidence_rate", "lower_limit", "upper_limit"]
+    filters = [("sequence", "=", sequence),
+               ("stratification_key", "=", stratification)]
+    if source.startswith("http"):
+        import fsspec
+        fs = fsspec.filesystem("https")
+        with fs.open(source, mode="rb") as fh:
+            tbl = pq.read_table(fh, columns=cols, filters=filters)
+    else:
+        tbl = pq.read_table(source, columns=cols, filters=filters)
+    return tbl.to_pandas()
 
 
 # Map stratification keys to readable labels
@@ -238,36 +258,35 @@ CAVEAT_HTML = (
 st.sidebar.title("InciGraph")
 st.sidebar.caption("Multimorbidity incidence contrast tool")
 
-sidebar_path = st.sidebar.text_input(
-    "Data folder (optional)", value="",
-    help="Leave blank to use the bundled data.",
-)
-data_dir = _resolve_data_dir(sidebar_path or None)
-if data_dir is None:
-    # No local data found. Download the deposit from Zenodo (cached, once).
-    with st.spinner("First run: fetching the data deposit from Zenodo "
-                    "(~110 MB, one-time)..."):
-        downloaded = _ensure_data_from_zenodo(ZENODO_RECORD_ID)
-    if downloaded:
-        data_dir = Path(downloaded)
+# Resolve where the data lives. If a local copy is present (a collaborator
+# running on their own machine, or a self-hosted deployment), prefer that.
+# Otherwise we read directly from the public Zenodo deposit; no download
+# happens up front -- each query fetches only the row group it needs.
+local_dir = _local_data_dir()
+local_dir_str = str(local_dir) if local_dir is not None else None
 
-if data_dir is None:
-    st.error(
-        "Could not find or download the InciGraph data. Either place the "
-        "parquet files in an `incigraph_data/` folder next to the repository, "
-        "type a path in the sidebar, or check that the Zenodo record "
-        f"(10.5281/zenodo.{ZENODO_RECORD_ID}) is reachable."
+if local_dir is not None:
+    st.sidebar.success(f"Reading data from local folder:\n`{local_dir}`")
+else:
+    st.sidebar.info(
+        f"Reading data directly from Zenodo "
+        f"(DOI 10.5281/zenodo.{ZENODO_RECORD_ID}). "
+        "Each query fetches only the rows it needs."
     )
-    st.stop()
-
-data_dir_str = str(data_dir)
-ig.set_data_dir(data_dir_str)
-st.sidebar.success(f"Data loaded from:\n`{data_dir}`")
 
 try:
-    STRATS = _available_strats(data_dir_str)
+    # Loading metadata is cheap (~1 MB). It's also the canary: if this
+    # fails, we can't reach Zenodo and the rest of the app is unusable.
+    META = _load_metadata(local_dir_str)
+    STRATS = _available_strats_from_l1(local_dir_str)
 except Exception as e:  # noqa: BLE001
-    st.error(f"Failed to load the data: {e}")
+    st.error(
+        f"Could not load the InciGraph metadata: {e}\n\n"
+        "If you are on Streamlit Community Cloud, the Zenodo record may be "
+        "temporarily unreachable. Try refreshing in a minute. If the error "
+        "persists, check that the Zenodo deposit "
+        f"(10.5281/zenodo.{ZENODO_RECORD_ID}) is published."
+    )
     st.stop()
 
 st.sidebar.metric("Disease conditions", len(DISEASE_NAMES))
@@ -292,8 +311,20 @@ def group_builder(side_key, default_strat_idx=0):
     )
 
     seq = tuple(st.session_state["current_seq"])
+    # Build the canonical sequence string the parquet stores: '0 X' for
+    # length 1, '0 X Y' for length 2, '0 X Y Z' for length 3.
+    sequence_str = "0 " + " ".join(str(i) for i in seq)
     try:
-        df = _get_sequence(data_dir_str, seq, strat)
+        df = _read_sequence_filtered(
+            sequence_length=len(seq),
+            sequence=sequence_str,
+            stratification=strat,
+            _local_dir_str=local_dir_str,
+        )
+        if df.empty:
+            raise ValueError(
+                f"No rows in the deposit for sequence {sequence_str!r} with "
+                f"stratification {strat!r}.")
     except Exception as e:  # noqa: BLE001
         st.markdown(f'<div class="sparse">No data: {e}</div>',
                     unsafe_allow_html=True)

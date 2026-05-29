@@ -1,15 +1,12 @@
 # Runtime dependencies for the InciGraph Streamlit app.
 #
-# Streamlit Community Cloud reads this file to build the app environment.
-# For local development, `pip install -e ".[plots]"` covers the same set.
+# The app reads parquet files directly from the public Zenodo deposit via
+# pyarrow + fsspec. No local download of the data is required (or sensible
+# on Streamlit Community Cloud, where the 1 GB memory cap rules out
+# loading the full 47M-row L3 file).
 #
-# IMPORTANT: the final line installs the InciGraph package itself from the
-# repository root (where pyproject.toml lives). Without it, `import incigraph`
-# fails on Community Cloud, because Community Cloud only installs what is
-# listed here -- it does NOT auto-install the repo's own package.
-#
-# The "." refers to the repo root. Community Cloud runs pip from there, so
-# pip reads pyproject.toml and installs the incigraph package + its deps.
+# The final line ('.') installs the InciGraph package itself from the
+# repo root (it uses pyproject.toml's src-layout config).
 
 streamlit>=1.30
 numpy>=1.24
@@ -17,7 +14,12 @@ pandas>=2.0
 pyarrow>=14.0
 scipy>=1.10
 matplotlib>=3.7
-requests>=2.28
+
+# Remote-parquet reading: fsspec opens HTTPS URLs as file-like objects so
+# pyarrow can do range-request-based row-group pruning. aiohttp is fsspec's
+# HTTP backend.
+fsspec>=2024.2
+aiohttp>=3.9
 
 # Install the InciGraph package itself from the repo root:
 .
