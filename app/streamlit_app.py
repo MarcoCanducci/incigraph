@@ -643,52 +643,101 @@ def render_irr_chart(table: pd.DataFrame, title: str,
                      reference_label: str | None = None) -> None:
     """Render a horizontal bar chart of IRRs with 95% CI error bars and
     a reference line at IRR=1.0. Uses Streamlit's altair backend (no
-    matplotlib needed)."""
+    matplotlib needed).
+
+    Bars are drawn on a LINEAR scale, anchored at IRR=1.0 (the reference).
+    Each bar shows the rate ratio for that group, extending from 1.0 to
+    the group's IRR (rightward when IRR>1, leftward when IRR<1). The
+    x-axis is auto-sized to include the full CI range with padding so
+    bars are always visible regardless of magnitude.
+    """
     if table.empty:
         st.markdown('<div class="sparse">No data to chart.</div>',
                     unsafe_allow_html=True)
         return
-    show = table[table["irr"].notna() | table.get(
-        "is_reference", pd.Series(False, index=table.index))]
+
+    # Both pages may emit either column name; accept both.
+    ref_col = None
+    if "is_reference" in table.columns:
+        ref_col = "is_reference"
+    elif "is_reference_value" in table.columns:
+        ref_col = "is_reference_value"
+    ref_mask = (table[ref_col] if ref_col is not None
+                else pd.Series(False, index=table.index))
+
+    # Keep rows that either have a valid IRR or are the reference row.
+    show = table[table["irr"].notna() | ref_mask].copy()
     if show.empty:
         st.markdown('<div class="sparse">All cells in this view have too '
                     "few events to compute an IRR.</div>",
                     unsafe_allow_html=True)
         return
 
-    # Build a tidy frame for altair
+    # Build a tidy frame for altair. Anchor each bar at IRR = 1.0; the
+    # bar's other end is the group's IRR, with the CI as a separate rule.
     chart_df = show.copy()
     chart_df["IRR"] = chart_df["irr"].fillna(1.0)
     chart_df["lo"] = chart_df["lower_ci"].fillna(chart_df["IRR"])
     chart_df["hi"] = chart_df["upper_ci"].fillna(chart_df["IRR"])
-    chart_df["is_ref"] = chart_df.get("is_reference",
-                                      pd.Series(False, index=chart_df.index))
+    chart_df["bar_start"] = 1.0
+    chart_df["bar_end"] = chart_df["IRR"]
+    chart_df["is_ref"] = ref_mask.loc[chart_df.index].fillna(False).astype(bool)
+
+    # Auto-range the x-axis with padding so bars/CIs are clearly visible.
+    lo_min = float(chart_df["lo"].min())
+    hi_max = float(chart_df["hi"].max())
+    # Include 1.0 in the range (the reference line) and pad ~10% each side.
+    axis_lo = min(lo_min, 1.0)
+    axis_hi = max(hi_max, 1.0)
+    span = max(axis_hi - axis_lo, 0.1)
+    axis_lo = max(0.0, axis_lo - 0.1 * span)
+    axis_hi = axis_hi + 0.1 * span
 
     import altair as alt
+    x_scale = alt.Scale(domain=[axis_lo, axis_hi], nice=False)
     base = alt.Chart(chart_df).encode(
         y=alt.Y("label:N", sort=None, title=None),
     )
     bars = base.mark_bar(size=18).encode(
-        x=alt.X("IRR:Q", scale=alt.Scale(type="log"),
-                title="Incidence rate ratio (log scale)"),
+        x=alt.X("bar_start:Q", scale=x_scale,
+                title="Incidence rate ratio (reference = 1.0)"),
+        x2="bar_end:Q",
         color=alt.condition(
-            alt.datum.is_ref,
-            alt.value("#bbb"),
-            alt.value("#2a6f97"),
+            "datum.is_ref",
+            alt.value("#bbbbbb"),
+            alt.condition(
+                "datum.IRR >= 1",
+                alt.value("#2a6f97"),  # navy for IRR >= 1
+                alt.value("#99582a"),  # warm brown for IRR < 1
+            ),
         ),
-        tooltip=["label", alt.Tooltip("IRR:Q", format=".2f"),
-                 alt.Tooltip("lo:Q", format=".2f"),
-                 alt.Tooltip("hi:Q", format=".2f")],
+        tooltip=[
+            alt.Tooltip("label:N", title="Group"),
+            alt.Tooltip("IRR:Q", format=".2f"),
+            alt.Tooltip("lo:Q", format=".2f", title="95% CI lower"),
+            alt.Tooltip("hi:Q", format=".2f", title="95% CI upper"),
+        ],
     )
-    errors = base.mark_rule().encode(
-        x="lo:Q", x2="hi:Q",
+    errors = base.mark_rule(color="#1f3147", strokeWidth=1.5).encode(
+        x=alt.X("lo:Q", scale=x_scale, title=""),
+        x2="hi:Q",
+    )
+    error_caps = base.mark_tick(color="#1f3147", thickness=1.5,
+                                size=8).encode(
+        x=alt.X("lo:Q", scale=x_scale, title=""),
+    ) + base.mark_tick(color="#1f3147", thickness=1.5, size=8).encode(
+        x=alt.X("hi:Q", scale=x_scale, title=""),
     )
     refline = alt.Chart(pd.DataFrame({"x": [1.0]})).mark_rule(
-        strokeDash=[4, 4], color="#666").encode(x="x:Q")
-    chart = (refline + bars + errors).properties(title=title, height=30 * len(chart_df))
+        strokeDash=[4, 4], color="#666").encode(
+        x=alt.X("x:Q", scale=x_scale))
+    chart = (bars + errors + error_caps + refline).properties(
+        title=title, height=max(120, 36 * len(chart_df))
+    )
     st.altair_chart(chart, use_container_width=True)
     if reference_label:
-        st.caption(f"Reference: **{reference_label}** (IRR = 1.0 by definition).")
+        st.caption(f"Reference: **{reference_label}** (IRR = 1.0 by "
+                   "definition). Whiskers show the 95% confidence interval.")
 
 
 def make_table_display(table: pd.DataFrame) -> pd.DataFrame:
