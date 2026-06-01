@@ -298,54 +298,101 @@ IDX_TO_DISPLAY = {i + 1: disp for i, disp in enumerate(DISEASE_DISPLAY)}
 
 
 # ======================================================================
-# Helpers used by both modes
+# Display constants for axes (labels, references, ordering)
 # ======================================================================
-def pick_sequence(key_prefix: str, default_first: str = "Hypertension"
-                  ) -> list[int]:
-    """Render three cascading disease pickers and return the chosen
-    sequence as a list of 1-based canonical indices.
+import numpy as np  # used by IRR tables and chart helpers
 
-    `key_prefix` namespaces the widgets so multiple sequence pickers can
-    co-exist on the page without colliding."""
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        d1 = st.selectbox(
-            "First condition", DISEASE_DISPLAY,
-            index=DISEASE_DISPLAY.index(default_first)
-            if default_first in DISEASE_DISPLAY else 0,
-            key=f"{key_prefix}_d1")
-    with c2:
-        d2 = st.selectbox(
-            "Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
-            index=0, key=f"{key_prefix}_d2")
-    with c3:
-        d3 = st.selectbox(
-            "Then (optional)", ["\u2014 none \u2014"] + DISEASE_DISPLAY,
-            index=0, key=f"{key_prefix}_d3",
-            disabled=(d2 == "\u2014 none \u2014"))
-    seq = [NAME_TO_IDX[d1]]
-    if d2 != "\u2014 none \u2014":
-        seq.append(NAME_TO_IDX[d2])
-        if d3 != "\u2014 none \u2014":
-            seq.append(NAME_TO_IDX[d3])
-    return seq
+#
+# Each demographic axis (Ethnicity, Sex, IMD, Age) has:
+#   * a human label for the chart and dropdowns
+#   * a default reference value (the manuscript's reporting convention)
+#   * a label-renderer that adds context (e.g. "IMD 1 (least deprived)")
+#   * an ordering hint so dropdowns/charts present values sensibly
+#
+# IMD direction follows the manuscript: 1 = least deprived, 5 = most deprived.
+# The reference defaults are the standard UK health-inequalities choices.
+
+AXIS_DISPLAY_NAME = {
+    "ETHNICITY": "Ethnicity",
+    "SEX":       "Sex",
+    "IMD":       "Deprivation (IMD)",
+    "AGE_CATG":  "Age band",
+}
+
+DEFAULT_REFERENCE = {
+    "ETHNICITY": "WHITE",
+    "SEX":       "M",
+    "IMD":       1.0,         # IMD 1 = least deprived
+    "AGE_CATG":  "41-50",
+}
+
+# Canonical age band order (used to sort the dropdown when AGE_CATG is the
+# axis). The deposit may store any subset of these; we sort observed values
+# according to this canonical list.
+AGE_BAND_ORDER = ["0-16", "17-30", "31-40", "41-50",
+                  "51-60", "61-70", "71-80", "81+"]
 
 
+def render_imd_label(v) -> str:
+    """Render an IMD value with its deprivation descriptor."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "IMD missing"
+    iv = int(v)
+    if iv == 1:
+        return "IMD 1 (least deprived)"
+    if iv == 5:
+        return "IMD 5 (most deprived)"
+    return f"IMD {iv}"
+
+
+def render_axis_value(axis: str, v) -> str:
+    """Render one value of one axis for display in dropdowns and charts."""
+    if axis == "IMD":
+        return render_imd_label(v)
+    if axis == "SEX":
+        if str(v) == "M":
+            return "Male"
+        if str(v) == "F":
+            return "Female"
+        if str(v) == "I":
+            return "Indeterminate"
+        return str(v)
+    if axis == "ETHNICITY":
+        return str(v).replace("_", " ").title()
+    if axis == "AGE_CATG":
+        return str(v)
+    return str(v)
+
+
+def order_axis_values(axis: str, observed_values: list) -> list:
+    """Return the observed values of an axis in a sensible display order."""
+    if axis == "AGE_CATG":
+        # Use canonical order for the bands we recognise, then append any
+        # other bands (e.g. older release with different cutpoints) sorted.
+        canonical = [v for v in AGE_BAND_ORDER if v in observed_values]
+        leftover = sorted(set(observed_values) - set(canonical),
+                          key=lambda x: str(x))
+        return canonical + leftover if canonical else leftover
+    if axis == "IMD":
+        # numeric ascending, with NaN (missing) at the end
+        non_nan = sorted(v for v in observed_values if not pd.isna(v))
+        return non_nan + [v for v in observed_values if pd.isna(v)]
+    return sorted(observed_values, key=lambda x: str(x))
+
+
+# ======================================================================
+# Data helpers shared by both pages
+# ======================================================================
 def fetch_sequence_rows(seq: list[int], strat: str) -> pd.DataFrame | None:
-    """Read parquet rows for one (sequence, stratification) tuple. Returns
-    a DataFrame on success or None on failure (with an inline error)."""
+    """Read parquet rows for one (sequence, stratification) tuple."""
     sequence_str = "0 " + " ".join(str(i) for i in seq)
     try:
         df = _read_sequence_filtered(
-            sequence_length=len(seq),
-            sequence=sequence_str,
-            stratification=strat,
-            _local_dir_str=local_dir_str,
+            sequence_length=len(seq), sequence=sequence_str,
+            stratification=strat, _local_dir_str=local_dir_str,
         )
         if df.empty:
-            raise ValueError(
-                f"No rows in the deposit for sequence {sequence_str!r} with "
-                f"stratification {strat!r}.")
+            return None
         return df
     except Exception as e:  # noqa: BLE001
         st.markdown(f'<div class="sparse">No data: {e}</div>',
@@ -353,391 +400,615 @@ def fetch_sequence_rows(seq: list[int], strat: str) -> pd.DataFrame | None:
         return None
 
 
-def pool_demographics(df: pd.DataFrame, strat: str, key_prefix: str
-                      ) -> dict | None:
-    """Render the multiselects for each axis of `strat` and return the
-    pooled counts.
+def pick_sequence(key_prefix: str, default_first: str = "Hypertension",
+                  min_length: int = 1, max_length: int = 3) -> list[int]:
+    """Render up to three cascading disease pickers."""
+    cols = st.columns(max_length)
+    pickers = []
+    none_label = "\u2014 none \u2014"
+    with cols[0]:
+        d1 = st.selectbox(
+            "First condition", DISEASE_DISPLAY,
+            index=DISEASE_DISPLAY.index(default_first)
+            if default_first in DISEASE_DISPLAY else 0,
+            key=f"{key_prefix}_d1")
+    pickers.append(d1)
+    if max_length >= 2:
+        with cols[1]:
+            d2 = st.selectbox(
+                "Then" + (" (optional)" if min_length < 2 else ""),
+                ([none_label] if min_length < 2 else []) + DISEASE_DISPLAY,
+                index=0, key=f"{key_prefix}_d2")
+        pickers.append(d2)
+    if max_length >= 3:
+        with cols[2]:
+            disabled = (max_length >= 2 and pickers[1] == none_label)
+            d3 = st.selectbox(
+                "Then" + (" (optional)" if min_length < 3 else ""),
+                ([none_label] if min_length < 3 else []) + DISEASE_DISPLAY,
+                index=0, key=f"{key_prefix}_d3", disabled=disabled)
+        pickers.append(d3)
+    seq = [NAME_TO_IDX[pickers[0]]]
+    for p in pickers[1:]:
+        if p != none_label:
+            seq.append(NAME_TO_IDX[p])
+        else:
+            break
+    return seq
 
-    Used by both modes: returns {num, pt, label, n_cells, strat}.
-    `key_prefix` is the widget-key namespace (e.g. 'mode1_num',
-    'mode2_shared'). Default selections pick the first value of each axis.
+
+def render_fix_selections(df: pd.DataFrame, axes_to_use: list[str],
+                          key_prefix: str) -> tuple[dict, str]:
+    """Render dropdowns to FIX 1-2 demographic axes to single values.
+
+    Returns (chosen_values_dict, human_label). The dict maps axis -> value
+    (or None for IMD-missing). The widgets are rendered once; use
+    apply_fix_selections to filter a dataframe afterwards.
     """
-    axes = [] if strat == "NONE" else strat.split("+")
-    selections = {}
-    for axis in axes:
+    chosen = {}
+    label_bits = []
+    for axis in axes_to_use:
+        col = AXIS_COL[axis]
+        if col not in df.columns:
+            continue
+        observed = list(df[col].dropna().unique().tolist())
+        if col == "imd" and df.get("imd_missing", pd.Series(dtype=bool)).any():
+            observed.append(None)
+        ordered = order_axis_values(axis, observed)
+        labels = {render_axis_value(axis, v): v for v in ordered}
+        default_ref = DEFAULT_REFERENCE.get(axis)
+        default_label = render_axis_value(axis, default_ref)
+        default_index = (list(labels).index(default_label)
+                         if default_label in labels else 0)
+        chosen_label = st.selectbox(
+            f"Fix {AXIS_DISPLAY_NAME.get(axis, axis)} to",
+            list(labels), index=default_index,
+            key=f"{key_prefix}_fix_{axis}",
+        )
+        chosen[axis] = labels[chosen_label]
+        label_bits.append(chosen_label)
+    return chosen, (", ".join(label_bits) if label_bits else "everyone")
+
+
+def apply_fix_selections(df: pd.DataFrame,
+                         chosen: dict) -> pd.DataFrame:
+    """Apply the selections returned by render_fix_selections to a frame."""
+    mask = pd.Series(True, index=df.index)
+    for axis, value in chosen.items():
         col = AXIS_COL[axis]
         if col not in df.columns:
             continue
         if col == "imd":
-            raw_vals = sorted(v for v in df["imd"].dropna().unique())
-            options = [f"{int(v)}" for v in raw_vals]
-            if df.get("imd_missing", pd.Series(dtype=bool)).any():
-                options.append("missing")
+            if value is None:
+                mask &= df.get("imd_missing", False)
+            else:
+                mask &= (df["imd"] == value)
         else:
-            options = sorted(str(v) for v in df[col].dropna().unique())
+            mask &= (df[col].astype(str) == str(value))
+    return df[mask].copy()
 
-        poolable = axis in POOLABLE_OK
-        help_txt = (
-            "Pick one value to fix it, or several to pool them."
-            if poolable else
-            "Pick one value. Pooling several categories here is rarely "
-            "meaningful."
-        )
-        picked = st.multiselect(
-            AXIS_LABEL.get(axis, axis), options,
-            default=options[:1],
-            key=f"{key_prefix}_{axis}",
-            help=help_txt,
-        )
-        if not poolable and len(picked) > 1:
-            st.markdown(
-                f'<div class="caveat">Pooling several '
-                f"{AXIS_LABEL[axis].lower()} categories is unusual \u2014 the "
-                "result sums incidence across them, which may not be "
-                "interpretable.</div>",
-                unsafe_allow_html=True)
-        selections[axis] = picked
 
-    mask = pd.Series(True, index=df.index)
-    label_bits = []
-    for axis, picked in selections.items():
-        col = AXIS_COL[axis]
-        if not picked:
-            label_bits.append(f"all {AXIS_LABEL[axis].lower()}")
+def fix_demographic_axes(df: pd.DataFrame, strat: str,
+                         key_prefix: str,
+                         axes_to_use: list[str]) -> tuple[pd.DataFrame, str]:
+    """Convenience wrapper: render selections + apply them. Used by page 1
+    where the same dataframe needs both."""
+    chosen, label = render_fix_selections(df, axes_to_use, key_prefix)
+    return apply_fix_selections(df, chosen), label
+
+
+def gradient_irr_table(df: pd.DataFrame, gradient_axis: str,
+                       reference_value, key_prefix: str
+                       ) -> pd.DataFrame:
+    """For each value of gradient_axis in df, compute the IRR vs the
+    reference_value. Returns a tidy table with columns:
+      label, value, num_events, num_pt, ref_events, ref_pt,
+      incidence_rate, ref_rate, irr, lower_ci, upper_ci, p_value,
+      is_reference.
+    """
+    col = AXIS_COL[gradient_axis]
+    if col not in df.columns:
+        return pd.DataFrame()
+
+    # observed values (treat IMD-missing as its own value)
+    observed_non_nan = list(df[col].dropna().unique().tolist())
+    has_missing = (col == "imd"
+                   and df.get("imd_missing", pd.Series(dtype=bool)).any())
+    observed = observed_non_nan + ([None] if has_missing else [])
+    ordered = order_axis_values(gradient_axis, observed)
+
+    # find reference row
+    def _select(v):
+        if col == "imd" and v is None:
+            return df[df.get("imd_missing", False)]
+        return df[df[col] == v]
+
+    ref_rows = _select(reference_value)
+    ref_n = float(ref_rows["numerator"].fillna(0).sum())
+    ref_t = float(ref_rows["denominator"].fillna(0).sum())
+
+    out = []
+    for v in ordered:
+        rows = _select(v)
+        n = float(rows["numerator"].fillna(0).sum())
+        t = float(rows["denominator"].fillna(0).sum())
+        is_ref = (v == reference_value
+                  or (v is None and reference_value is None))
+        if t == 0:
             continue
-        if col == "imd":
-            wanted_numeric = [float(v) for v in picked if v != "missing"]
-            sub_mask = df["imd"].isin(wanted_numeric)
-            if "missing" in picked:
-                sub_mask = sub_mask | df.get("imd_missing", False)
-            mask &= sub_mask
-            label_bits.append(f"IMD {'+'.join(picked)}")
+        if is_ref:
+            out.append({
+                "label": render_axis_value(gradient_axis, v),
+                "value": v,
+                "num_events": int(n), "num_pt": t,
+                "ref_events": int(ref_n), "ref_pt": ref_t,
+                "incidence_rate": n / t * 1e5,
+                "ref_rate": ref_n / ref_t * 1e5 if ref_t > 0 else np.nan,
+                "irr": 1.0, "lower_ci": np.nan, "upper_ci": np.nan,
+                "p_value": np.nan, "is_reference": True,
+            })
         else:
-            mask &= df[col].astype(str).isin(picked)
-            label_bits.append(f"{AXIS_LABEL[axis]} {'+'.join(picked)}")
+            if n < 1 or ref_n < 1 or ref_t == 0:
+                out.append({
+                    "label": render_axis_value(gradient_axis, v),
+                    "value": v,
+                    "num_events": int(n), "num_pt": t,
+                    "ref_events": int(ref_n), "ref_pt": ref_t,
+                    "incidence_rate": n / t * 1e5 if t > 0 else np.nan,
+                    "ref_rate": ref_n / ref_t * 1e5 if ref_t > 0 else np.nan,
+                    "irr": np.nan, "lower_ci": np.nan, "upper_ci": np.nan,
+                    "p_value": np.nan, "is_reference": False,
+                })
+                continue
+            r = irr_ci(n, t, ref_n, ref_t)
+            out.append({
+                "label": render_axis_value(gradient_axis, v),
+                "value": v,
+                "num_events": int(n), "num_pt": t,
+                "ref_events": int(ref_n), "ref_pt": ref_t,
+                "incidence_rate": n / t * 1e5,
+                "ref_rate": ref_n / ref_t * 1e5,
+                "irr": r["irr"], "lower_ci": r["lower_ci"],
+                "upper_ci": r["upper_ci"], "p_value": r["p_raw"],
+                "is_reference": False,
+            })
+    return pd.DataFrame(out)
 
-    sel = df[mask]
-    n_cells = len(sel)
-    if n_cells == 0:
-        st.markdown('<div class="sparse">No cells match this selection.</div>',
+
+def history_irr_table(df_full: pd.DataFrame, df_parent: pd.DataFrame,
+                      gradient_axis: str, reference_value
+                      ) -> pd.DataFrame:
+    """For each value of gradient_axis, compute the IRR of the full
+    sequence's rate vs the parent sub-sequence's rate, both within that
+    same value of the axis. Returns one row per gradient value with the
+    same columns as gradient_irr_table (except is_reference is dropped --
+    every row is its own contrast).
+    """
+    col = AXIS_COL[gradient_axis]
+    if col not in df_full.columns or col not in df_parent.columns:
+        return pd.DataFrame()
+
+    observed_non_nan = sorted(set(df_full[col].dropna().unique().tolist())
+                              | set(df_parent[col].dropna().unique().tolist()),
+                              key=lambda x: str(x))
+    has_missing_full = (col == "imd"
+                        and df_full.get("imd_missing", pd.Series(dtype=bool)).any())
+    has_missing_parent = (col == "imd"
+                          and df_parent.get("imd_missing", pd.Series(dtype=bool)).any())
+    observed = observed_non_nan + ([None] if (has_missing_full or has_missing_parent) else [])
+    ordered = order_axis_values(gradient_axis, observed)
+
+    def _sel(frame, v):
+        if col == "imd" and v is None:
+            return frame[frame.get("imd_missing", False)]
+        return frame[frame[col] == v]
+
+    out = []
+    for v in ordered:
+        rf = _sel(df_full, v)
+        rp = _sel(df_parent, v)
+        n_f = float(rf["numerator"].fillna(0).sum())
+        t_f = float(rf["denominator"].fillna(0).sum())
+        n_p = float(rp["numerator"].fillna(0).sum())
+        t_p = float(rp["denominator"].fillna(0).sum())
+        if t_f == 0 and t_p == 0:
+            continue
+        if n_f < 1 or n_p < 1 or t_f == 0 or t_p == 0:
+            out.append({
+                "label": render_axis_value(gradient_axis, v), "value": v,
+                "num_events": int(n_f), "num_pt": t_f,
+                "ref_events": int(n_p), "ref_pt": t_p,
+                "incidence_rate": n_f / t_f * 1e5 if t_f > 0 else np.nan,
+                "ref_rate": n_p / t_p * 1e5 if t_p > 0 else np.nan,
+                "irr": np.nan, "lower_ci": np.nan, "upper_ci": np.nan,
+                "p_value": np.nan,
+                "is_reference_value": (v == reference_value),
+            })
+            continue
+        r = irr_ci(n_f, t_f, n_p, t_p)
+        out.append({
+            "label": render_axis_value(gradient_axis, v), "value": v,
+            "num_events": int(n_f), "num_pt": t_f,
+            "ref_events": int(n_p), "ref_pt": t_p,
+            "incidence_rate": n_f / t_f * 1e5,
+            "ref_rate": n_p / t_p * 1e5,
+            "irr": r["irr"], "lower_ci": r["lower_ci"],
+            "upper_ci": r["upper_ci"], "p_value": r["p_raw"],
+            "is_reference_value": (v == reference_value),
+        })
+    return pd.DataFrame(out)
+
+
+def render_irr_chart(table: pd.DataFrame, title: str,
+                     reference_label: str | None = None) -> None:
+    """Render a horizontal bar chart of IRRs with 95% CI error bars and
+    a reference line at IRR=1.0. Uses Streamlit's altair backend (no
+    matplotlib needed)."""
+    if table.empty:
+        st.markdown('<div class="sparse">No data to chart.</div>',
                     unsafe_allow_html=True)
-        return None
-    num = float(sel["numerator"].fillna(0).sum())
-    pt = float(sel["denominator"].fillna(0).sum())
-    label = ", ".join(label_bits) if label_bits else "everyone"
-    st.caption(f"{n_cells} cell(s) pooled \u00b7 {int(num):,} events "
-               f"over {pt:,.0f} person-years")
-    return {"num": num, "pt": pt, "label": label, "n_cells": n_cells,
-            "strat": strat}
-
-
-def render_result(g_num: dict, g_den: dict, mode: str,
-                  endpoint_num: str | None = None,
-                  endpoint_den: str | None = None,
-                  shared_group_label: str | None = None,
-                  traj: str | None = None,
-                  traj_num: str | None = None,
-                  traj_den: str | None = None) -> None:
-    """Render the IRR result block (metrics + sentence + rates + download).
-
-    `mode` is 'demographics' (mode 1: same trajectory, two groups) or
-    'sequences' (mode 2: two trajectories, same group)."""
-    if g_num is None or g_den is None:
-        st.info("Complete the inputs above to see the contrast.")
         return
-    if g_num["num"] < 1 or g_den["num"] < 1:
-        st.markdown(
-            '<div class="sparse">One of the sides has no events, so the '
-            "rate ratio is undefined. Widen the selection or pool more "
-            "cells.</div>", unsafe_allow_html=True)
+    show = table[table["irr"].notna() | table.get(
+        "is_reference", pd.Series(False, index=table.index))]
+    if show.empty:
+        st.markdown('<div class="sparse">All cells in this view have too '
+                    "few events to compute an IRR.</div>",
+                    unsafe_allow_html=True)
         return
 
-    r = irr_ci(g_num["num"], g_num["pt"], g_den["num"], g_den["pt"])
+    # Build a tidy frame for altair
+    chart_df = show.copy()
+    chart_df["IRR"] = chart_df["irr"].fillna(1.0)
+    chart_df["lo"] = chart_df["lower_ci"].fillna(chart_df["IRR"])
+    chart_df["hi"] = chart_df["upper_ci"].fillna(chart_df["IRR"])
+    chart_df["is_ref"] = chart_df.get("is_reference",
+                                      pd.Series(False, index=chart_df.index))
 
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.markdown(f'<div class="metric-big">{r["irr"]:.2f}</div>',
-                    unsafe_allow_html=True)
-        st.caption("Incidence rate ratio")
-    with m2:
-        st.markdown(
-            f'<div class="metric-big">{r["lower_ci"]:.2f}'
-            f'\u2013{r["upper_ci"]:.2f}</div>',
-            unsafe_allow_html=True)
-        st.caption("95% confidence interval")
-    with m3:
-        p = r["p_raw"]
-        pstr = "<0.001" if p < 0.001 else f"{p:.3f}"
-        st.markdown(f'<div class="metric-big">{pstr}</div>',
-                    unsafe_allow_html=True)
-        st.caption("p-value (unadjusted)")
-
-    times = "\u00d7"
-    if mode == "demographics":
-        st.markdown(
-            f"In **{g_num['label']}**, the incidence of {endpoint_num} is "
-            f"**{r['irr']:.2f}{times}** that in **{g_den['label']}**."
-        )
-    else:  # mode == 'sequences'
-        st.markdown(
-            f"In **{shared_group_label}**, the incidence of "
-            f"**{traj_num}** is **{r['irr']:.2f}{times}** that of "
-            f"**{traj_den}**."
-        )
-
-    rate_num = g_num["num"] / g_num["pt"] * 1e5
-    rate_den = g_den["num"] / g_den["pt"] * 1e5
-    st.caption(
-        f"Numerator rate: {rate_num:,.1f} per 100,000 PY "
-        f"({int(g_num['num']):,} events). "
-        f"Denominator rate: {rate_den:,.1f} per 100,000 PY "
-        f"({int(g_den['num']):,} events)."
+    import altair as alt
+    base = alt.Chart(chart_df).encode(
+        y=alt.Y("label:N", sort=None, title=None),
     )
-
-    # downloadable summary
-    if mode == "demographics":
-        row = {
-            "mode": "compare demographic groups",
-            "trajectory": traj,
-            "numerator_group": g_num["label"],
-            "numerator_stratification": g_num["strat"],
-            "denominator_group": g_den["label"],
-            "denominator_stratification": g_den["strat"],
-        }
-    else:
-        row = {
-            "mode": "compare sequences",
-            "shared_group": shared_group_label,
-            "shared_stratification": g_num["strat"],
-            "numerator_trajectory": traj_num,
-            "denominator_trajectory": traj_den,
-        }
-    row.update({
-        "numerator_events": int(g_num["num"]),
-        "numerator_person_years": g_num["pt"],
-        "denominator_events": int(g_den["num"]),
-        "denominator_person_years": g_den["pt"],
-        "irr": r["irr"], "lower_95ci": r["lower_ci"],
-        "upper_95ci": r["upper_ci"], "p_value": r["p_raw"],
-    })
-    summary = pd.DataFrame([row])
-    st.download_button(
-        "Download this result (CSV)",
-        summary.to_csv(index=False).encode("utf-8"),
-        file_name="incigraph_contrast.csv", mime="text/csv",
+    bars = base.mark_bar(size=18).encode(
+        x=alt.X("IRR:Q", scale=alt.Scale(type="log"),
+                title="Incidence rate ratio (log scale)"),
+        color=alt.condition(
+            alt.datum.is_ref,
+            alt.value("#bbb"),
+            alt.value("#2a6f97"),
+        ),
+        tooltip=["label", alt.Tooltip("IRR:Q", format=".2f"),
+                 alt.Tooltip("lo:Q", format=".2f"),
+                 alt.Tooltip("hi:Q", format=".2f")],
     )
+    errors = base.mark_rule().encode(
+        x="lo:Q", x2="hi:Q",
+    )
+    refline = alt.Chart(pd.DataFrame({"x": [1.0]})).mark_rule(
+        strokeDash=[4, 4], color="#666").encode(x="x:Q")
+    chart = (refline + bars + errors).properties(title=title, height=30 * len(chart_df))
+    st.altair_chart(chart, use_container_width=True)
+    if reference_label:
+        st.caption(f"Reference: **{reference_label}** (IRR = 1.0 by definition).")
+
+
+def make_table_display(table: pd.DataFrame) -> pd.DataFrame:
+    """Format the numeric table for display: rates rounded, p-values
+    rendered, ordering preserved."""
+    if table.empty:
+        return table
+    show = table.copy()
+    show["IRR"] = show["irr"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+    show["95% CI"] = show.apply(
+        lambda r: (f"{r['lower_ci']:.2f}\u2013{r['upper_ci']:.2f}"
+                   if pd.notna(r["lower_ci"]) else "—"),
+        axis=1)
+    show["p"] = show["p_value"].apply(
+        lambda p: ("<0.001" if pd.notna(p) and p < 0.001
+                   else (f"{p:.3f}" if pd.notna(p) else "—")))
+    show["Rate / 100k PY"] = show["incidence_rate"].apply(
+        lambda x: f"{x:,.1f}" if pd.notna(x) else "—")
+    show["Events"] = show["num_events"].astype(int).map(lambda x: f"{x:,}")
+    show["Person-years"] = show["num_pt"].apply(lambda x: f"{x:,.0f}")
+    cols = ["label", "Events", "Person-years", "Rate / 100k PY",
+            "IRR", "95% CI", "p"]
+    show = show[cols].rename(columns={"label": "Group"})
+    return show
+
+
+CAVEAT_BAR = (
+    '<div class="caveat"><b>Note.</b> P-values shown are unadjusted for '
+    "multiple comparisons. Confidence intervals (95%) reflect the Poisson "
+    "variance of each rate. These are crude rate ratios for hypothesis "
+    "generation and service planning, not adjusted causal effects.</div>"
+)
 
 
 # ======================================================================
-# Main
+# Main: radio chooses one of the two pages
 # ======================================================================
-st.title("InciGraph contrast tool")
+
+st.title("InciGraph")
 st.markdown(
-    "Compare incidence rates between groups or between sequences. "
-    "Pick a mode below to get started."
+    "A focused tool for asking two questions about the InciGraph "
+    "multimorbidity deposit."
 )
 
 mode = st.radio(
-    "What do you want to compare?",
-    ["demographics", "sequences"],
+    "Choose a question:",
+    ["inequalities", "history"],
     format_func=lambda m: {
-        "demographics":
-            "Compare demographic groups (one trajectory, two groups)",
-        "sequences":
-            "Compare sequences (one demographic group, two trajectories)",
+        "inequalities": "Demographic inequalities in a sequence",
+        "history":      "Effect of prior history on a sequence",
     }[m],
     key="mode",
     horizontal=False,
 )
 st.divider()
 
-if mode == "demographics":
-    # ---- Mode 1: today's flow, refactored to use the helpers ----
-    st.subheader("1. Choose a trajectory")
-    seq = pick_sequence("m1_seq")
-    st.session_state["current_seq"] = seq
 
+# ----------------------------------------------------------------------
+# PAGE 1 -- Demographic inequalities in a sequence
+# ----------------------------------------------------------------------
+if mode == "inequalities":
+
+    st.subheader("1. Choose the disease sequence")
+    seq = pick_sequence("p1_seq", min_length=1, max_length=3)
     endpoint = IDX_TO_DISPLAY[seq[-1]]
     traj = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq)
-    st.markdown(f"**Trajectory:** {traj}")
+    st.markdown(f"**Sequence:** {traj}")
     if len(seq) > 1:
         prior = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq[:-1])
-        st.caption(f"Incidence of {endpoint} after {prior}.")
+        st.caption(f"Incidence of {endpoint} after {prior} (first-ever "
+                   "diagnoses in this order).")
     else:
-        st.caption(f"Incidence of {endpoint}.")
+        st.caption(f"Incidence of {endpoint} as a first-ever diagnosis.")
 
-    st.subheader("2. Define the two groups")
-    default_strat = STRATS.index("IMD") if "IMD" in STRATS else 0
-
-    col_num, col_den = st.columns(2)
-    with col_num:
-        st.markdown('<div class="grp-num"><b>Numerator group</b> '
-                    "(the rate on top of the ratio)</div>",
-                    unsafe_allow_html=True)
-        strat_num = st.selectbox("Break down by", STRATS,
-                                  index=default_strat,
-                                  format_func=strat_label,
-                                  key="m1_num_strat")
-        df_num = fetch_sequence_rows(seq, strat_num)
-        g_num = (pool_demographics(df_num, strat_num, "m1_num")
-                 if df_num is not None else None)
-    with col_den:
-        st.markdown('<div class="grp-den"><b>Denominator group</b> '
-                    "(the reference rate)</div>",
-                    unsafe_allow_html=True)
-        strat_den = st.selectbox("Break down by", STRATS,
-                                  index=default_strat,
-                                  format_func=strat_label,
-                                  key="m1_den_strat")
-        df_den = fetch_sequence_rows(seq, strat_den)
-        g_den = (pool_demographics(df_den, strat_den, "m1_den")
-                 if df_den is not None else None)
-
-    st.subheader("3. Result")
-    if g_num is not None and g_den is not None \
-            and g_num["strat"] != g_den["strat"]:
-        st.markdown(
-            '<div class="caveat">The two groups use different breakdown '
-            "schemes. That is allowed, but make sure the comparison is "
-            "meaningful.</div>", unsafe_allow_html=True)
-    render_result(g_num, g_den, mode="demographics",
-                  endpoint_num=endpoint, traj=traj)
-
-else:
-    # ---- Mode 2: same group, two trajectories ----
-    st.subheader("1. Choose the demographic group")
-    st.caption(
-        "These characteristics are held the same for both trajectories. "
-        "Pick the stratification scheme and the values that define the "
-        "group you're studying."
-    )
-    default_strat = STRATS.index("IMD") if "IMD" in STRATS else 0
-    shared_strat = st.selectbox(
-        "Break down by", STRATS,
-        index=default_strat, format_func=strat_label,
-        key="m2_strat",
+    st.subheader("2. Choose which demographic gradient to look at")
+    all_axes = ["ETHNICITY", "SEX", "IMD", "AGE_CATG"]
+    gradient_axis = st.radio(
+        "Compare across:",
+        all_axes,
+        format_func=lambda a: AXIS_DISPLAY_NAME[a],
+        horizontal=True,
+        key="p1_axis",
     )
 
-    st.subheader("2. Choose the two trajectories to compare")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown('<div class="grp-num"><b>Numerator trajectory</b></div>',
-                    unsafe_allow_html=True)
-        seq_a = pick_sequence("m2_seqA", default_first="Hypertension")
-        traj_a = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq_a)
-        st.markdown(f"&nbsp;&nbsp;{traj_a}", unsafe_allow_html=True)
-    with col_b:
-        st.markdown('<div class="grp-den"><b>Denominator trajectory</b></div>',
-                    unsafe_allow_html=True)
-        seq_b = pick_sequence("m2_seqB", default_first="Hypertension")
-        traj_b = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq_b)
-        st.markdown(f"&nbsp;&nbsp;{traj_b}", unsafe_allow_html=True)
-
-    if seq_a == seq_b:
-        st.info("The two trajectories are identical \u2014 the result will "
-                "trivially be 1.0. Change one of them to get a meaningful "
-                "contrast.")
-
-    # Fetch each trajectory's data under the shared stratification
-    df_a = fetch_sequence_rows(seq_a, shared_strat)
-    df_b = fetch_sequence_rows(seq_b, shared_strat)
-    if df_a is None or df_b is None:
+    st.subheader("3. (Optional) Fix other demographic axes")
+    st.caption("You can fix up to two other axes to a single value, e.g. "
+               "\"Asian women\". The gradient is then shown within that fixed "
+               "stratum. Leave empty for the overall view across the gradient.")
+    fixable = [a for a in all_axes if a != gradient_axis]
+    fix_choice = st.multiselect(
+        "Axes to fix",
+        fixable,
+        default=[],
+        format_func=lambda a: AXIS_DISPLAY_NAME[a],
+        key="p1_fix_choice",
+    )
+    if len(fix_choice) > 2:
+        st.warning("The deposit supports at most three demographic axes at "
+                   "once. Please fix at most two axes here (since the gradient "
+                   "axis is the third).")
         st.stop()
 
-    st.subheader("3. Refine the demographic group")
-    st.caption(
-        "Pick one value to fix an axis, or several to pool. The same "
-        "selections are applied to both trajectories."
-    )
-    # The two DataFrames share the schema (same stratification), so the
-    # available values for each axis should be identical. We render one
-    # set of multiselects and apply the resulting filter to both sides.
-    # Using df_a as the "options source"; if any value is missing in
-    # df_b the pooled sum simply contributes zero, which is correct.
-    g_shared_label_holder = []
+    # Build the required stratification key from the chosen axes.
+    needed_axes = set(fix_choice) | {gradient_axis}
+    strat_key = "+".join(sorted(needed_axes))
+    if strat_key not in STRATS:
+        st.error(
+            f"The combination you chose ({strat_key}) is not available in "
+            "the deposit. The available schemes are: "
+            f"{', '.join(sorted(STRATS))}."
+        )
+        st.stop()
 
-    # Render the demographic pickers ONCE, build the mask, apply to BOTH frames
-    axes = [] if shared_strat == "NONE" else shared_strat.split("+")
-    selections = {}
-    for axis in axes:
-        col = AXIS_COL[axis]
-        if col not in df_a.columns:
-            continue
-        if col == "imd":
-            raw_vals = sorted(v for v in df_a["imd"].dropna().unique())
-            options = [f"{int(v)}" for v in raw_vals]
-            if df_a.get("imd_missing", pd.Series(dtype=bool)).any():
-                options.append("missing")
+    df = fetch_sequence_rows(seq, strat_key)
+    if df is None:
+        st.markdown('<div class="sparse">No data available for this '
+                    "combination.</div>", unsafe_allow_html=True)
+        st.stop()
+
+    # Apply the fixed axes
+    df_fixed, fixed_label = fix_demographic_axes(
+        df, strat_key, "p1", fix_choice)
+
+    st.subheader("4. Choose the reference group")
+    # observed values on the gradient axis after fixing
+    col = AXIS_COL[gradient_axis]
+    observed_non_nan = list(df_fixed[col].dropna().unique().tolist())
+    has_missing = (col == "imd"
+                   and df_fixed.get("imd_missing", pd.Series(dtype=bool)).any())
+    observed = observed_non_nan + ([None] if has_missing else [])
+    ordered = order_axis_values(gradient_axis, observed)
+    labels = {render_axis_value(gradient_axis, v): v for v in ordered}
+    if not labels:
+        st.markdown('<div class="sparse">No groups on the gradient axis '
+                    "have data after the fixed selections.</div>",
+                    unsafe_allow_html=True)
+        st.stop()
+    default_ref = DEFAULT_REFERENCE.get(gradient_axis)
+    default_label = render_axis_value(gradient_axis, default_ref)
+    default_index = (list(labels).index(default_label)
+                     if default_label in labels else 0)
+    ref_label = st.selectbox(
+        f"Reference {AXIS_DISPLAY_NAME[gradient_axis]}",
+        list(labels),
+        index=default_index,
+        key="p1_ref",
+    )
+    ref_value = labels[ref_label]
+
+    st.subheader("5. Result")
+    table = gradient_irr_table(df_fixed, gradient_axis, ref_value, "p1")
+    if table.empty:
+        st.markdown('<div class="sparse">No IRRs could be computed for '
+                    "this combination.</div>", unsafe_allow_html=True)
+    else:
+        title = (f"IRR of {traj} across {AXIS_DISPLAY_NAME[gradient_axis]} "
+                 f"in {fixed_label}")
+        render_irr_chart(table, title, reference_label=ref_label)
+        with st.expander("Underlying numbers (table)"):
+            st.dataframe(make_table_display(table),
+                         use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download these IRRs (CSV)",
+            table.to_csv(index=False).encode("utf-8"),
+            file_name="incigraph_inequalities.csv", mime="text/csv",
+        )
+
+    st.markdown(CAVEAT_BAR, unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------
+# PAGE 2 -- Effect of prior history on a sequence
+# ----------------------------------------------------------------------
+else:  # mode == "history"
+
+    st.subheader("1. Choose the full sequence (must have 2 or 3 conditions)")
+    seq = pick_sequence("p2_seq", min_length=2, max_length=3)
+    if len(seq) < 2:
+        st.info("This page asks whether earlier conditions in a sequence "
+                "elevate the rate of the latest one. To use it, pick at "
+                "least two conditions above.")
+        st.stop()
+
+    endpoint = IDX_TO_DISPLAY[seq[-1]]
+    traj_full = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq)
+    parent_seq = seq[1:]  # drop the earliest condition
+    traj_parent = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in parent_seq)
+    st.markdown(f"**Comparing:** {traj_full}  *vs*  {traj_parent}")
+    st.caption(
+        f"This contrasts the rate of {endpoint} among people whose first-ever "
+        f"history is *{traj_full}* against the rate among people whose "
+        f"first-ever history is *{traj_parent}*. The two populations are "
+        "disjoint by construction (different first-ever diagnoses)."
+    )
+
+    # Optional: also show drop-both for length-3
+    show_both_drops = False
+    if len(seq) == 3:
+        show_both_drops = st.checkbox(
+            f"Also compare with **{IDX_TO_DISPLAY[seq[-1]]}** alone (drop both "
+            "earlier conditions)",
+            value=False, key="p2_show_short")
+
+    st.subheader("2. Choose which demographic gradient to look at")
+    all_axes = ["ETHNICITY", "SEX", "IMD", "AGE_CATG"]
+    gradient_axis = st.radio(
+        "Compare across:", all_axes,
+        format_func=lambda a: AXIS_DISPLAY_NAME[a],
+        horizontal=True, key="p2_axis",
+    )
+
+    st.subheader("3. (Optional) Fix other demographic axes")
+    fixable = [a for a in all_axes if a != gradient_axis]
+    fix_choice = st.multiselect(
+        "Axes to fix",
+        fixable, default=[],
+        format_func=lambda a: AXIS_DISPLAY_NAME[a],
+        key="p2_fix_choice",
+    )
+    if len(fix_choice) > 2:
+        st.warning("Please fix at most two other axes.")
+        st.stop()
+
+    needed_axes = set(fix_choice) | {gradient_axis}
+    strat_key = "+".join(sorted(needed_axes))
+    if strat_key not in STRATS:
+        st.error(
+            f"The combination you chose ({strat_key}) is not available in "
+            "the deposit. The available schemes are: "
+            f"{', '.join(sorted(STRATS))}."
+        )
+        st.stop()
+
+    df_full = fetch_sequence_rows(seq, strat_key)
+    df_parent = fetch_sequence_rows(parent_seq, strat_key)
+    if df_full is None or df_parent is None:
+        st.markdown('<div class="sparse">No data available for one or both '
+                    "sequences in this stratification.</div>",
+                    unsafe_allow_html=True)
+        st.stop()
+
+    # Render the FIX selections ONCE (using the full frame's observed values),
+    # then apply the resulting selections to both frames.
+    fix_chosen, fixed_label = render_fix_selections(
+        df_full, fix_choice, "p2")
+    df_full_fixed = apply_fix_selections(df_full, fix_chosen)
+    df_parent_fixed = apply_fix_selections(df_parent, fix_chosen)
+
+    st.subheader("4. Choose the reference group")
+    col = AXIS_COL[gradient_axis]
+    obs = list(df_full_fixed[col].dropna().unique().tolist())
+    has_missing = (col == "imd"
+                   and df_full_fixed.get("imd_missing", pd.Series(dtype=bool)).any())
+    observed = obs + ([None] if has_missing else [])
+    ordered = order_axis_values(gradient_axis, observed)
+    labels = {render_axis_value(gradient_axis, v): v for v in ordered}
+    if not labels:
+        st.markdown('<div class="sparse">No groups on the gradient axis '
+                    "have data after the fixed selections.</div>",
+                    unsafe_allow_html=True)
+        st.stop()
+    default_ref = DEFAULT_REFERENCE.get(gradient_axis)
+    default_label = render_axis_value(gradient_axis, default_ref)
+    default_index = (list(labels).index(default_label)
+                     if default_label in labels else 0)
+    ref_label = st.selectbox(
+        f"Reference {AXIS_DISPLAY_NAME[gradient_axis]} "
+        "(highlighted but not contrasted)",
+        list(labels), index=default_index, key="p2_ref",
+    )
+    ref_value = labels[ref_label]
+
+    st.subheader("5. Result")
+    table = history_irr_table(df_full_fixed, df_parent_fixed,
+                              gradient_axis, ref_value)
+    if table.empty:
+        st.markdown('<div class="sparse">No IRRs could be computed for '
+                    "this combination.</div>", unsafe_allow_html=True)
+    else:
+        title = (f"IRR of {traj_full} vs {traj_parent} across "
+                 f"{AXIS_DISPLAY_NAME[gradient_axis]} in {fixed_label}")
+        render_irr_chart(table.assign(is_reference=table["is_reference_value"]),
+                         title, reference_label=ref_label)
+        with st.expander("Underlying numbers (table)"):
+            st.dataframe(make_table_display(table),
+                         use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download these IRRs (CSV)",
+            table.to_csv(index=False).encode("utf-8"),
+            file_name="incigraph_history.csv", mime="text/csv",
+        )
+
+    # Optional second contrast: full vs just the endpoint
+    if show_both_drops and len(seq) == 3:
+        st.subheader("6. Additional contrast: drop both earlier conditions")
+        shortest_seq = [seq[-1]]
+        df_short = fetch_sequence_rows(shortest_seq, strat_key)
+        if df_short is None:
+            st.markdown('<div class="sparse">No data for the endpoint-alone '
+                        "sequence in this stratification.</div>",
+                        unsafe_allow_html=True)
         else:
-            options = sorted(str(v) for v in df_a[col].dropna().unique())
-        poolable = axis in POOLABLE_OK
-        help_txt = (
-            "Pick one value to fix it, or several to pool them."
-            if poolable else
-            "Pick one value. Pooling several categories here is rarely "
-            "meaningful.")
-        picked = st.multiselect(
-            AXIS_LABEL.get(axis, axis), options,
-            default=options[:1],
-            key=f"m2_shared_{axis}", help=help_txt)
-        if not poolable and len(picked) > 1:
-            st.markdown(
-                f'<div class="caveat">Pooling several '
-                f"{AXIS_LABEL[axis].lower()} categories is unusual.</div>",
-                unsafe_allow_html=True)
-        selections[axis] = picked
+            df_short_fixed = apply_fix_selections(df_short, fix_chosen)
+            traj_short = IDX_TO_DISPLAY[seq[-1]]
+            table2 = history_irr_table(df_full_fixed, df_short_fixed,
+                                       gradient_axis, ref_value)
+            if not table2.empty:
+                title2 = (f"IRR of {traj_full} vs {traj_short} across "
+                          f"{AXIS_DISPLAY_NAME[gradient_axis]} in {fixed_label}")
+                render_irr_chart(
+                    table2.assign(is_reference=table2["is_reference_value"]),
+                    title2, reference_label=ref_label)
+                with st.expander("Underlying numbers (table) -- shortest"):
+                    st.dataframe(make_table_display(table2),
+                                 use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download these IRRs (CSV) -- shortest",
+                    table2.to_csv(index=False).encode("utf-8"),
+                    file_name="incigraph_history_short.csv", mime="text/csv",
+                    key="dl_short",
+                )
 
-    def _apply_mask_and_pool(df: pd.DataFrame) -> tuple[float, float, int]:
-        mask = pd.Series(True, index=df.index)
-        for axis, picked in selections.items():
-            col = AXIS_COL[axis]
-            if not picked:
-                continue
-            if col == "imd":
-                wanted = [float(v) for v in picked if v != "missing"]
-                sub = df["imd"].isin(wanted)
-                if "missing" in picked:
-                    sub = sub | df.get("imd_missing", False)
-                mask &= sub
-            else:
-                mask &= df[col].astype(str).isin(picked)
-        sel = df[mask]
-        n = float(sel["numerator"].fillna(0).sum())
-        pt = float(sel["denominator"].fillna(0).sum())
-        return n, pt, len(sel)
-
-    label_bits = []
-    for axis, picked in selections.items():
-        if not picked:
-            label_bits.append(f"all {AXIS_LABEL[axis].lower()}")
-        elif AXIS_COL[axis] == "imd":
-            label_bits.append(f"IMD {'+'.join(picked)}")
-        else:
-            label_bits.append(f"{AXIS_LABEL[axis]} {'+'.join(picked)}")
-    shared_label = ", ".join(label_bits) if label_bits else "everyone"
-
-    num_a, pt_a, ncells_a = _apply_mask_and_pool(df_a)
-    num_b, pt_b, ncells_b = _apply_mask_and_pool(df_b)
-
-    st.caption(
-        f"For trajectory **{traj_a}**: {ncells_a} cell(s), {int(num_a):,} "
-        f"events over {pt_a:,.0f} person-years."
-    )
-    st.caption(
-        f"For trajectory **{traj_b}**: {ncells_b} cell(s), {int(num_b):,} "
-        f"events over {pt_b:,.0f} person-years."
-    )
-
-    g_a = ({"num": num_a, "pt": pt_a, "label": shared_label,
-            "n_cells": ncells_a, "strat": shared_strat}
-           if ncells_a > 0 else None)
-    g_b = ({"num": num_b, "pt": pt_b, "label": shared_label,
-            "n_cells": ncells_b, "strat": shared_strat}
-           if ncells_b > 0 else None)
-
-    st.subheader("4. Result")
-    render_result(g_a, g_b, mode="sequences",
-                  shared_group_label=shared_label,
-                  traj_num=traj_a, traj_den=traj_b)
-
-st.markdown(CAVEAT_HTML, unsafe_allow_html=True)
+    st.markdown(CAVEAT_BAR, unsafe_allow_html=True)
