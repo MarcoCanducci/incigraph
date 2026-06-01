@@ -693,6 +693,21 @@ def render_irr_chart(table: pd.DataFrame, title: str,
     axis_lo = max(0.0, axis_lo - 0.1 * span)
     axis_hi = axis_hi + 0.1 * span
 
+    # Precompute bar colour per row rather than nesting alt.condition() --
+    # altair v6 rejects a nested condition as the if_false branch and
+    # raises an opaque error inside _condition_to_selection. We just put
+    # the chosen colour into a column and let altair read it directly.
+    BAR_COLOR_REF = "#bbbbbb"      # reference row (grey)
+    BAR_COLOR_ABOVE = "#2a6f97"    # IRR >= 1 (navy)
+    BAR_COLOR_BELOW = "#99582a"    # IRR < 1 (warm brown)
+
+    def _row_color(r):
+        if r["is_ref"]:
+            return BAR_COLOR_REF
+        return BAR_COLOR_ABOVE if r["IRR"] >= 1.0 else BAR_COLOR_BELOW
+
+    chart_df["bar_color"] = chart_df.apply(_row_color, axis=1)
+
     import altair as alt
     x_scale = alt.Scale(domain=[axis_lo, axis_hi], nice=False)
     base = alt.Chart(chart_df).encode(
@@ -702,15 +717,7 @@ def render_irr_chart(table: pd.DataFrame, title: str,
         x=alt.X("bar_start:Q", scale=x_scale,
                 title="Incidence rate ratio (reference = 1.0)"),
         x2="bar_end:Q",
-        color=alt.condition(
-            "datum.is_ref",
-            alt.value("#bbbbbb"),
-            alt.condition(
-                "datum.IRR >= 1",
-                alt.value("#2a6f97"),  # navy for IRR >= 1
-                alt.value("#99582a"),  # warm brown for IRR < 1
-            ),
-        ),
+        color=alt.Color("bar_color:N", scale=None, legend=None),
         tooltip=[
             alt.Tooltip("label:N", title="Group"),
             alt.Tooltip("IRR:Q", format=".2f"),
