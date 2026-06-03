@@ -916,60 +916,67 @@ if mode == "inequalities":
 
 
 # ----------------------------------------------------------------------
-# PAGE 2 -- Effect of prior history on a sequence
+# PAGE 2 -- Effect of prior history on a sequence (simplified)
 # ----------------------------------------------------------------------
 else:  # mode == "history"
 
-    st.subheader("1. Choose the full sequence (must have 2 or 3 conditions)")
+    st.markdown(
+        "Ask a single question of the form: *In this demographic group, does "
+        "having one (or two) prior conditions in the patient's history "
+        "elevate the rate of the later condition?* Pick a demographic "
+        "stratum, then pick a 2- or 3-condition trajectory; the page "
+        "returns one rate ratio with its 95% confidence interval and "
+        "p-value."
+    )
+
+    st.subheader("1. Choose the trajectory (2 or 3 conditions)")
     seq = pick_sequence("p2_seq", min_length=2, max_length=3)
     if len(seq) < 2:
-        st.info("This page asks whether earlier conditions in a sequence "
-                "elevate the rate of the latest one. To use it, pick at "
-                "least two conditions above.")
+        st.info("Pick at least two conditions above to define a trajectory.")
         st.stop()
 
     endpoint = IDX_TO_DISPLAY[seq[-1]]
     traj_full = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in seq)
-    parent_seq = seq[1:]  # drop the earliest condition
-    traj_parent = " \u2192 ".join(IDX_TO_DISPLAY[i] for i in parent_seq)
-    st.markdown(f"**Comparing:** {traj_full}  *vs*  {traj_parent}")
+    parent_seq = seq[1:]                       # drop the earliest condition
+
+    # Build human-readable phrases for "after <prior>" used in result sentences.
+    # full_prior is the history that *precedes* the endpoint in the full
+    # trajectory; parent_prior is the history that precedes the endpoint in
+    # the parent (drop-earliest) sub-sequence.
+    # For length 2 (A->B): full_prior = "A", parent_prior = None (=> "B alone")
+    # For length 3 (A->B->C): full_prior = "A -> B", parent_prior = "B"
+    prior_conds_full = [IDX_TO_DISPLAY[i] for i in seq[:-1]]
+    prior_conds_parent = [IDX_TO_DISPLAY[i] for i in parent_seq[:-1]]
+    full_prior = " \u2192 ".join(prior_conds_full) if prior_conds_full else ""
+    parent_prior = (" \u2192 ".join(prior_conds_parent)
+                    if prior_conds_parent else None)
+    parent_phrase = (f"after **{parent_prior}**" if parent_prior
+                     else "**alone**")
+    traj_parent = (" \u2192 ".join(IDX_TO_DISPLAY[i] for i in parent_seq)
+                   if len(parent_seq) > 1 else IDX_TO_DISPLAY[parent_seq[0]])
+
+    st.subheader("2. Fix the demographic stratum")
     st.caption(
-        f"This contrasts the rate of {endpoint} among people whose first-ever "
-        f"history is *{traj_full}* against the rate among people whose "
-        f"first-ever history is *{traj_parent}*. The two populations are "
-        "disjoint by construction (different first-ever diagnoses)."
+        "Pick 1\u20133 demographic axes to define the group of interest "
+        "(e.g., for a White female patient aged 31\u201340 pick Ethnicity, "
+        "Sex and Age, and fix each to its observed value)."
     )
-
-    # Optional: also show drop-both for length-3
-    show_both_drops = False
-    if len(seq) == 3:
-        show_both_drops = st.checkbox(
-            f"Also compare with **{IDX_TO_DISPLAY[seq[-1]]}** alone (drop both "
-            "earlier conditions)",
-            value=False, key="p2_show_short")
-
-    st.subheader("2. Choose which demographic gradient to look at")
     all_axes = ["ETHNICITY", "SEX", "IMD", "AGE_CATG"]
-    gradient_axis = st.radio(
-        "Compare across:", all_axes,
-        format_func=lambda a: AXIS_DISPLAY_NAME[a],
-        horizontal=True, key="p2_axis",
-    )
-
-    st.subheader("3. (Optional) Fix other demographic axes")
-    fixable = [a for a in all_axes if a != gradient_axis]
     fix_choice = st.multiselect(
-        "Axes to fix",
-        fixable, default=[],
+        "Demographic axes to fix",
+        all_axes,
+        default=["ETHNICITY", "SEX", "AGE_CATG"],
         format_func=lambda a: AXIS_DISPLAY_NAME[a],
         key="p2_fix_choice",
     )
-    if len(fix_choice) > 2:
-        st.warning("Please fix at most two other axes.")
+    if not fix_choice:
+        st.info("Select at least one demographic axis to fix.")
+        st.stop()
+    if len(fix_choice) > 3:
+        st.warning("Please fix at most three axes.")
         st.stop()
 
-    needed_axes = set(fix_choice) | {gradient_axis}
-    strat_key = "+".join(sorted(needed_axes))
+    strat_key = "+".join(sorted(fix_choice))
     if strat_key not in STRATS:
         st.error(
             f"The combination you chose ({strat_key}) is not available in "
@@ -986,85 +993,170 @@ else:  # mode == "history"
                     unsafe_allow_html=True)
         st.stop()
 
-    # Render the FIX selections ONCE (using the full frame's observed values),
-    # then apply the resulting selections to both frames.
+    # Render the FIX selections (single value per axis), then apply
     fix_chosen, fixed_label = render_fix_selections(
         df_full, fix_choice, "p2")
     df_full_fixed = apply_fix_selections(df_full, fix_chosen)
     df_parent_fixed = apply_fix_selections(df_parent, fix_chosen)
 
-    st.subheader("4. Choose the reference group")
-    col = AXIS_COL[gradient_axis]
-    obs = list(df_full_fixed[col].dropna().unique().tolist())
-    has_missing = (col == "imd"
-                   and df_full_fixed.get("imd_missing", pd.Series(dtype=bool)).any())
-    observed = obs + ([None] if has_missing else [])
-    ordered = order_axis_values(gradient_axis, observed)
-    labels = {render_axis_value(gradient_axis, v): v for v in ordered}
-    if not labels:
-        st.markdown('<div class="sparse">No groups on the gradient axis '
-                    "have data after the fixed selections.</div>",
-                    unsafe_allow_html=True)
-        st.stop()
-    default_ref = DEFAULT_REFERENCE.get(gradient_axis)
-    default_label = render_axis_value(gradient_axis, default_ref)
-    default_index = (list(labels).index(default_label)
-                     if default_label in labels else 0)
-    ref_label = st.selectbox(
-        f"Reference {AXIS_DISPLAY_NAME[gradient_axis]} "
-        "(highlighted but not contrasted)",
-        list(labels), index=default_index, key="p2_ref",
-    )
-    ref_value = labels[ref_label]
+    # Single-stratum totals
+    n_full = float(df_full_fixed["numerator"].fillna(0).sum())
+    t_full = float(df_full_fixed["denominator"].fillna(0).sum())
+    n_par  = float(df_parent_fixed["numerator"].fillna(0).sum())
+    t_par  = float(df_parent_fixed["denominator"].fillna(0).sum())
 
-    st.subheader("5. Result")
-    table = history_irr_table(df_full_fixed, df_parent_fixed,
-                              gradient_axis, ref_value)
-    if table.empty:
-        st.markdown('<div class="sparse">No IRRs could be computed for '
-                    "this combination.</div>", unsafe_allow_html=True)
+    st.subheader("3. Result")
+    st.markdown(f"**Trajectory:** {traj_full}")
+    st.markdown(f"**Demographic group:** {fixed_label}")
+
+    # Headline contrast: full vs parent (drop earliest)
+    if n_full < 10 or n_par < 10:
+        st.markdown(
+            '<div class="sparse">Too few events in this group to compute a '
+            f"rate ratio reliably (full sequence: {int(n_full):,} events; "
+            f"parent sub-sequence: {int(n_par):,} events; threshold is "
+            "10 on each side). Try a broader group or a different "
+            "trajectory.</div>",
+            unsafe_allow_html=True)
     else:
-        title = (f"IRR of {traj_full} vs {traj_parent} across "
-                 f"{AXIS_DISPLAY_NAME[gradient_axis]} in {fixed_label}")
-        render_irr_chart(table.assign(is_reference=table["is_reference_value"]),
-                         title, reference_label=ref_label)
-        with st.expander("Underlying numbers (table)"):
-            st.dataframe(make_table_display(table),
-                         use_container_width=True, hide_index=True)
+        r1 = irr_ci(n_full, t_full, n_par, t_par)
+        irr1 = r1["irr"]
+        lo1, hi1 = r1["lower_ci"], r1["upper_ci"]
+        p1 = r1["p_raw"]
+        pstr1 = "<0.001" if p1 < 0.001 else f"{p1:.3f}"
+        rate_full = (n_full / t_full * 1e5) if t_full > 0 else float("nan")
+        rate_par  = (n_par / t_par * 1e5)  if t_par  > 0 else float("nan")
+
+        st.markdown(
+            f"In **{fixed_label}**, the rate of **{endpoint}** after "
+            f"**{full_prior}** is **{irr1:.2f}\u00d7** the rate of "
+            f"**{endpoint}** {parent_phrase} "
+            f"(95% CI {lo1:.2f}\u2013{hi1:.2f}; p = {pstr1})."
+        )
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.markdown(f'<div class="metric-big">{irr1:.2f}</div>',
+                        unsafe_allow_html=True)
+            st.caption("Incidence rate ratio")
+        with m2:
+            st.markdown(
+                f'<div class="metric-big">{lo1:.2f}\u2013{hi1:.2f}</div>',
+                unsafe_allow_html=True)
+            st.caption("95% confidence interval")
+        with m3:
+            st.markdown(f'<div class="metric-big">{pstr1}</div>',
+                        unsafe_allow_html=True)
+            st.caption("p-value (unadjusted)")
+
+        st.caption(
+            f"Underlying rates: **{traj_full}** \u2014 "
+            f"{rate_full:,.1f} per 100,000 PY ({int(n_full):,} events over "
+            f"{t_full:,.0f} person-years). **{traj_parent}** \u2014 "
+            f"{rate_par:,.1f} per 100,000 PY ({int(n_par):,} events over "
+            f"{t_par:,.0f} person-years)."
+        )
+
+        # Downloadable summary of this single contrast
+        summary1 = pd.DataFrame([{
+            "trajectory": traj_full,
+            "reference_subsequence": traj_parent,
+            "demographic_group": fixed_label,
+            "stratification": strat_key,
+            "events_full": int(n_full),
+            "person_years_full": t_full,
+            "events_parent": int(n_par),
+            "person_years_parent": t_par,
+            "rate_full_per_100k_PY": rate_full,
+            "rate_parent_per_100k_PY": rate_par,
+            "irr": irr1,
+            "lower_95ci": lo1,
+            "upper_95ci": hi1,
+            "p_value": p1,
+        }])
         st.download_button(
-            "Download these IRRs (CSV)",
-            table.to_csv(index=False).encode("utf-8"),
+            "Download this result (CSV)",
+            summary1.to_csv(index=False).encode("utf-8"),
             file_name="incigraph_history.csv", mime="text/csv",
         )
 
-    # Optional second contrast: full vs just the endpoint
-    if show_both_drops and len(seq) == 3:
-        st.subheader("6. Additional contrast: drop both earlier conditions")
-        shortest_seq = [seq[-1]]
-        df_short = fetch_sequence_rows(shortest_seq, strat_key)
-        if df_short is None:
-            st.markdown('<div class="sparse">No data for the endpoint-alone '
-                        "sequence in this stratification.</div>",
-                        unsafe_allow_html=True)
-        else:
-            df_short_fixed = apply_fix_selections(df_short, fix_chosen)
+    # Optional second contrast for length-3: full vs endpoint alone
+    if len(seq) == 3:
+        with st.expander(
+                f"Also show the contrast against **{endpoint}** alone "
+                "(drop both earlier conditions)"):
+            shortest_seq = [seq[-1]]
             traj_short = IDX_TO_DISPLAY[seq[-1]]
-            table2 = history_irr_table(df_full_fixed, df_short_fixed,
-                                       gradient_axis, ref_value)
-            if not table2.empty:
-                title2 = (f"IRR of {traj_full} vs {traj_short} across "
-                          f"{AXIS_DISPLAY_NAME[gradient_axis]} in {fixed_label}")
-                render_irr_chart(
-                    table2.assign(is_reference=table2["is_reference_value"]),
-                    title2, reference_label=ref_label)
-                with st.expander("Underlying numbers (table) -- shortest"):
-                    st.dataframe(make_table_display(table2),
-                                 use_container_width=True, hide_index=True)
-                st.download_button(
-                    "Download these IRRs (CSV) -- shortest",
-                    table2.to_csv(index=False).encode("utf-8"),
-                    file_name="incigraph_history_short.csv", mime="text/csv",
-                    key="dl_short",
-                )
+            df_short = fetch_sequence_rows(shortest_seq, strat_key)
+            if df_short is None:
+                st.markdown('<div class="sparse">No data for the endpoint-'
+                            "alone sequence in this stratification.</div>",
+                            unsafe_allow_html=True)
+            else:
+                df_short_fixed = apply_fix_selections(df_short, fix_chosen)
+                n_sh = float(df_short_fixed["numerator"].fillna(0).sum())
+                t_sh = float(df_short_fixed["denominator"].fillna(0).sum())
+                if n_full < 10 or n_sh < 10:
+                    st.markdown(
+                        '<div class="sparse">Too few events to compute this '
+                        f"contrast (full sequence: {int(n_full):,}; "
+                        f"endpoint alone: {int(n_sh):,}; threshold is 10 on "
+                        "each side).</div>",
+                        unsafe_allow_html=True)
+                else:
+                    r2 = irr_ci(n_full, t_full, n_sh, t_sh)
+                    irr2 = r2["irr"]
+                    lo2, hi2 = r2["lower_ci"], r2["upper_ci"]
+                    p2 = r2["p_raw"]
+                    pstr2 = "<0.001" if p2 < 0.001 else f"{p2:.3f}"
+                    rate_sh = (n_sh / t_sh * 1e5) if t_sh > 0 else float("nan")
+                    st.markdown(
+                        f"In **{fixed_label}**, the rate of **{endpoint}** "
+                        f"after **{full_prior}** is **{irr2:.2f}\u00d7** the "
+                        f"rate of **{endpoint}** alone "
+                        f"(95% CI {lo2:.2f}\u2013{hi2:.2f}; p = {pstr2})."
+                    )
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        st.markdown(f'<div class="metric-big">{irr2:.2f}</div>',
+                                    unsafe_allow_html=True)
+                        st.caption("Incidence rate ratio")
+                    with m2:
+                        st.markdown(
+                            f'<div class="metric-big">{lo2:.2f}\u2013{hi2:.2f}</div>',
+                            unsafe_allow_html=True)
+                        st.caption("95% confidence interval")
+                    with m3:
+                        st.markdown(f'<div class="metric-big">{pstr2}</div>',
+                                    unsafe_allow_html=True)
+                        st.caption("p-value (unadjusted)")
+                    st.caption(
+                        f"Underlying rate of **{endpoint}** alone: "
+                        f"{rate_sh:,.1f} per 100,000 PY ({int(n_sh):,} "
+                        f"events over {t_sh:,.0f} person-years)."
+                    )
+                    summary2 = pd.DataFrame([{
+                        "trajectory": traj_full,
+                        "reference_subsequence": traj_short,
+                        "demographic_group": fixed_label,
+                        "stratification": strat_key,
+                        "events_full": int(n_full),
+                        "person_years_full": t_full,
+                        "events_endpoint_alone": int(n_sh),
+                        "person_years_endpoint_alone": t_sh,
+                        "rate_full_per_100k_PY": rate_full,
+                        "rate_endpoint_alone_per_100k_PY": rate_sh,
+                        "irr": irr2,
+                        "lower_95ci": lo2,
+                        "upper_95ci": hi2,
+                        "p_value": p2,
+                    }])
+                    st.download_button(
+                        "Download this result (CSV)",
+                        summary2.to_csv(index=False).encode("utf-8"),
+                        file_name="incigraph_history_endpoint_alone.csv",
+                        mime="text/csv",
+                        key="dl_endpoint_alone",
+                    )
 
     st.markdown(CAVEAT_BAR, unsafe_allow_html=True)
