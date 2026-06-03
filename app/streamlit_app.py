@@ -1158,9 +1158,10 @@ else:  # mode == "history"
 
     st.subheader("2. Fix the demographic stratum")
     st.caption(
-        "Pick 1\u20133 demographic axes to define the group of interest "
+        "Pick 0\u20133 demographic axes to define the group of interest "
         "(e.g., for a White female patient aged 31\u201340 pick Ethnicity, "
-        "Sex and Age, and fix each to its observed value)."
+        "Sex and Age, and fix each to its observed value). Select none to "
+        "see the unstratified contrast across the entire eligible cohort."
     )
     all_axes = ["ETHNICITY", "SEX", "IMD", "AGE_CATG"]
     fix_choice = st.multiselect(
@@ -1170,14 +1171,28 @@ else:  # mode == "history"
         format_func=lambda a: AXIS_DISPLAY_NAME[a],
         key="p2_fix_choice",
     )
-    if not fix_choice:
-        st.info("Select at least one demographic axis to fix.")
-        st.stop()
     if len(fix_choice) > 3:
         st.warning("Please fix at most three axes.")
         st.stop()
 
-    strat_key = "+".join(sorted(fix_choice))
+    # When the user fixes nothing, query the unstratified rows. The deposit
+    # may label this either 'NONE' or 'NO_DEMO' depending on the converter
+    # version; pick whichever is present.
+    if fix_choice:
+        strat_key = "+".join(sorted(fix_choice))
+    else:
+        for candidate in ("NONE", "NO_DEMO"):
+            if candidate in STRATS:
+                strat_key = candidate
+                break
+        else:
+            st.error(
+                "This deposit does not contain an unstratified set of rows "
+                "(expected stratification 'NONE' or 'NO_DEMO'). Available "
+                f"schemes: {', '.join(sorted(STRATS))}."
+            )
+            st.stop()
+
     if strat_key not in STRATS:
         st.error(
             f"The combination you chose ({strat_key}) is not available in "
