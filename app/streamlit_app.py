@@ -326,6 +326,44 @@ DEFAULT_REFERENCE = {
     "AGE_CATG":  "41-50",
 }
 
+# Canonical complete universe of values for each demographic axis. The chart
+# uses this list (rather than the observed-values list from the data) so that
+# every group is always visible on the y-axis -- even if data is missing for
+# that group in the current query. None / NaN denotes a missing-value bucket.
+AXIS_UNIVERSE: dict[str, list] = {
+    "ETHNICITY": ["WHITE", "SOUTH_ASIAN", "BLACK", "MIXED_RACE",
+                  "OTHERS", "MISSING"],
+    "SEX":       ["M", "F"],
+    "IMD":       [1.0, 2.0, 3.0, 4.0, 5.0, None],   # None = IMD missing
+    "AGE_CATG":  ["0-16", "17-30", "31-40", "41-50",
+                  "51-60", "61-70", "71-80", "81+"],
+}
+
+# Three-tier suppression policy (matches the supplement section 2.2 update):
+#   N >= EVENTS_RELIABLE         => normal display
+#   EVENTS_DISCLOSURE <= N < EVENTS_RELIABLE => shown but de-emphasised
+#                                              ("low-power" / shaded bar)
+#   N < EVENTS_DISCLOSURE        => suppressed entirely (CPRD disclosure rule)
+EVENTS_DISCLOSURE = 5    # below this, the cell must not be displayed
+EVENTS_RELIABLE   = 10   # below this, the cell is flagged as low-power
+
+
+def classify_cell(num_events: float, ref_events: float) -> str:
+    """Return one of 'ok' / 'low_power' / 'suppressed' for an IRR cell.
+
+    Suppression policy is two-sided: the strictest tier across the
+    numerator and denominator wins. So an N=200 cell contrasted against
+    a 6-event reference is 'low_power'; a 6-event cell contrasted
+    against a 6-event reference is also 'low_power'; a 3-event cell
+    against anything is 'suppressed'.
+    """
+    n = min(num_events, ref_events)
+    if n < EVENTS_DISCLOSURE:
+        return "suppressed"
+    if n < EVENTS_RELIABLE:
+        return "low_power"
+    return "ok"
+
 # Canonical age band order (used to sort the dropdown when AGE_CATG is the
 # axis). The deposit may store any subset of these; we sort observed values
 # according to this canonical list.
@@ -500,24 +538,32 @@ def fix_demographic_axes(df: pd.DataFrame, strat: str,
 def gradient_irr_table(df: pd.DataFrame, gradient_axis: str,
                        reference_value, key_prefix: str
                        ) -> pd.DataFrame:
-    """For each value of gradient_axis in df, compute the IRR vs the
-    reference_value. Returns a tidy table with columns:
+    """For each value of gradient_axis in the canonical AXIS_UNIVERSE,
+    compute the IRR vs the reference_value. Returns a tidy table with
+    columns:
       label, value, num_events, num_pt, ref_events, ref_pt,
       incidence_rate, ref_rate, irr, lower_ci, upper_ci, p_value,
-      is_reference.
+      is_reference, power_class, status_note.
+
+    A row exists for every value in AXIS_UNIVERSE[gradient_axis], even
+    when the deposit has no matching cells for that group -- in which
+    case the row is left with NaN numerator / denominator / IRR. This is
+    deliberate: the chart shows the full universe of groups on the y-axis
+    so missing data is visually evident.
+
+    power_class is one of:
+        'ok'          : both numerator and reference sides have >= 10 events
+        'low_power'   : at least one side has 5..9 events (shown but flagged)
+        'suppressed'  : at least one side has <5 events (no IRR shown;
+                        CPRD disclosure rule)
+        'no_data'     : the deposit has no matching row for this group
+        'reference'   : this row is the reference value itself (IRR=1)
     """
     col = AXIS_COL[gradient_axis]
     if col not in df.columns:
         return pd.DataFrame()
 
-    # observed values (treat IMD-missing as its own value)
-    observed_non_nan = list(df[col].dropna().unique().tolist())
-    has_missing = (col == "imd"
-                   and df.get("imd_missing", pd.Series(dtype=bool)).any())
-    observed = observed_non_nan + ([None] if has_missing else [])
-    ordered = order_axis_values(gradient_axis, observed)
-
-    # find reference row
+    # find reference row totals
     def _select(v):
         if col == "imd" and v is None:
             return df[df.get("imd_missing", False)]
@@ -526,52 +572,75 @@ def gradient_irr_table(df: pd.DataFrame, gradient_axis: str,
     ref_rows = _select(reference_value)
     ref_n = float(ref_rows["numerator"].fillna(0).sum())
     ref_t = float(ref_rows["denominator"].fillna(0).sum())
+    ref_has_data = (len(ref_rows) > 0 and ref_t > 0)
+    ref_class = classify_cell(ref_n, ref_n) if ref_has_data else "no_data"
 
-    out = []
-    for v in ordered:
+    out: list[dict] = []
+    for v in AXIS_UNIVERSE[gradient_axis]:
         rows = _select(v)
         n = float(rows["numerator"].fillna(0).sum())
         t = float(rows["denominator"].fillna(0).sum())
+        has_data = (len(rows) > 0 and t > 0)
         is_ref = (v == reference_value
                   or (v is None and reference_value is None))
-        if t == 0:
-            continue
+
+        base = {
+            "label": render_axis_value(gradient_axis, v),
+            "value": v,
+            "num_events": int(n) if has_data else np.nan,
+            "num_pt": t if has_data else np.nan,
+            "ref_events": int(ref_n) if ref_has_data else np.nan,
+            "ref_pt": ref_t if ref_has_data else np.nan,
+            "incidence_rate": (n / t * 1e5) if has_data else np.nan,
+            "ref_rate": (ref_n / ref_t * 1e5) if ref_has_data else np.nan,
+        }
+
         if is_ref:
             out.append({
-                "label": render_axis_value(gradient_axis, v),
-                "value": v,
-                "num_events": int(n), "num_pt": t,
-                "ref_events": int(ref_n), "ref_pt": ref_t,
-                "incidence_rate": n / t * 1e5,
-                "ref_rate": ref_n / ref_t * 1e5 if ref_t > 0 else np.nan,
-                "irr": 1.0, "lower_ci": np.nan, "upper_ci": np.nan,
-                "p_value": np.nan, "is_reference": True,
+                **base,
+                "irr": 1.0 if ref_has_data else np.nan,
+                "lower_ci": np.nan, "upper_ci": np.nan, "p_value": np.nan,
+                "is_reference": True,
+                "power_class": "reference" if ref_has_data else "no_data",
+                "status_note": ("reference group" if ref_has_data
+                                else "no data in deposit"),
             })
-        else:
-            if n < 1 or ref_n < 1 or ref_t == 0:
-                out.append({
-                    "label": render_axis_value(gradient_axis, v),
-                    "value": v,
-                    "num_events": int(n), "num_pt": t,
-                    "ref_events": int(ref_n), "ref_pt": ref_t,
-                    "incidence_rate": n / t * 1e5 if t > 0 else np.nan,
-                    "ref_rate": ref_n / ref_t * 1e5 if ref_t > 0 else np.nan,
-                    "irr": np.nan, "lower_ci": np.nan, "upper_ci": np.nan,
-                    "p_value": np.nan, "is_reference": False,
-                })
-                continue
-            r = irr_ci(n, t, ref_n, ref_t)
+            continue
+
+        if not has_data or not ref_has_data:
             out.append({
-                "label": render_axis_value(gradient_axis, v),
-                "value": v,
-                "num_events": int(n), "num_pt": t,
-                "ref_events": int(ref_n), "ref_pt": ref_t,
-                "incidence_rate": n / t * 1e5,
-                "ref_rate": ref_n / ref_t * 1e5,
-                "irr": r["irr"], "lower_ci": r["lower_ci"],
-                "upper_ci": r["upper_ci"], "p_value": r["p_raw"],
-                "is_reference": False,
+                **base,
+                "irr": np.nan, "lower_ci": np.nan, "upper_ci": np.nan,
+                "p_value": np.nan, "is_reference": False,
+                "power_class": "no_data",
+                "status_note": "no data in deposit for this group",
             })
+            continue
+
+        cls = classify_cell(n, ref_n)
+        if cls == "suppressed":
+            out.append({
+                **base,
+                "irr": np.nan, "lower_ci": np.nan, "upper_ci": np.nan,
+                "p_value": np.nan, "is_reference": False,
+                "power_class": "suppressed",
+                "status_note": ("suppressed: at least one side has fewer "
+                                f"than {EVENTS_DISCLOSURE} events "
+                                "(CPRD disclosure rule)"),
+            })
+            continue
+
+        r = irr_ci(n, t, ref_n, ref_t)
+        out.append({
+            **base,
+            "irr": r["irr"], "lower_ci": r["lower_ci"],
+            "upper_ci": r["upper_ci"], "p_value": r["p_raw"],
+            "is_reference": False,
+            "power_class": cls,
+            "status_note": ("lower precision (fewer than "
+                            f"{EVENTS_RELIABLE} events on at least one side)"
+                            if cls == "low_power" else ""),
+        })
     return pd.DataFrame(out)
 
 
@@ -642,131 +711,263 @@ def history_irr_table(df_full: pd.DataFrame, df_parent: pd.DataFrame,
 def render_irr_chart(table: pd.DataFrame, title: str,
                      reference_label: str | None = None) -> None:
     """Render a horizontal bar chart of IRRs with 95% CI error bars and
-    a reference line at IRR=1.0. Uses Streamlit's altair backend (no
-    matplotlib needed).
+    a reference line at IRR=1.0.
 
-    Bars are drawn on a LINEAR scale, anchored at IRR=1.0 (the reference).
-    Each bar shows the rate ratio for that group, extending from 1.0 to
-    the group's IRR (rightward when IRR>1, leftward when IRR<1). The
-    x-axis is auto-sized to include the full CI range with padding so
-    bars are always visible regardless of magnitude.
+    The chart shows EVERY row of the input table, in row order. Rows
+    where the IRR could not be computed (no data in the deposit, or
+    suppressed under the CPRD <5-event disclosure rule) still appear on
+    the y-axis but with no bar, so missing data is visually evident.
+    Rows where one or both sides have 5-9 events ('low_power') are shown
+    as pale-shaded bars to indicate reduced statistical precision; rows
+    with >=10 events on both sides display normally.
+
+    Bars are drawn on a LINEAR scale anchored at IRR = 1.0 (the
+    reference). The x-axis range is auto-sized to include the full CI
+    span of the rows that do have IRRs, with 10% padding on each side.
     """
     if table.empty:
         st.markdown('<div class="sparse">No data to chart.</div>',
                     unsafe_allow_html=True)
         return
 
-    # Both pages may emit either column name; accept both.
+    # The table already contains one row per universe value (with NaN IRR
+    # for missing-data / suppressed groups). Show all of them in order.
+    chart_df = table.copy().reset_index(drop=True)
+
+    # Accept either column name for the reference flag
     ref_col = None
-    if "is_reference" in table.columns:
+    if "is_reference" in chart_df.columns:
         ref_col = "is_reference"
-    elif "is_reference_value" in table.columns:
+    elif "is_reference_value" in chart_df.columns:
         ref_col = "is_reference_value"
-    ref_mask = (table[ref_col] if ref_col is not None
-                else pd.Series(False, index=table.index))
+    ref_mask = (chart_df[ref_col].fillna(False).astype(bool)
+                if ref_col is not None
+                else pd.Series(False, index=chart_df.index))
+    chart_df["is_ref"] = ref_mask
 
-    # Keep rows that either have a valid IRR or are the reference row.
-    show = table[table["irr"].notna() | ref_mask].copy()
-    if show.empty:
-        st.markdown('<div class="sparse">All cells in this view have too '
-                    "few events to compute an IRR.</div>",
-                    unsafe_allow_html=True)
-        return
+    # power_class may not exist on tables produced by older code paths
+    if "power_class" not in chart_df.columns:
+        chart_df["power_class"] = chart_df["irr"].apply(
+            lambda x: "no_data" if pd.isna(x) else "ok"
+        )
 
-    # Build a tidy frame for altair. Anchor each bar at IRR = 1.0; the
-    # bar's other end is the group's IRR, with the CI as a separate rule.
-    chart_df = show.copy()
-    chart_df["IRR"] = chart_df["irr"].fillna(1.0)
-    chart_df["lo"] = chart_df["lower_ci"].fillna(chart_df["IRR"])
-    chart_df["hi"] = chart_df["upper_ci"].fillna(chart_df["IRR"])
+    # Numeric placeholders for charting (will not be drawn for NaN IRR).
+    chart_df["IRR"] = chart_df["irr"]
+    chart_df["lo"] = chart_df["lower_ci"]
+    chart_df["hi"] = chart_df["upper_ci"]
     chart_df["bar_start"] = 1.0
     chart_df["bar_end"] = chart_df["IRR"]
-    chart_df["is_ref"] = ref_mask.loc[chart_df.index].fillna(False).astype(bool)
 
-    # Auto-range the x-axis with padding so bars/CIs are clearly visible.
-    lo_min = float(chart_df["lo"].min())
-    hi_max = float(chart_df["hi"].max())
-    # Include 1.0 in the range (the reference line) and pad ~10% each side.
-    axis_lo = min(lo_min, 1.0)
-    axis_hi = max(hi_max, 1.0)
-    span = max(axis_hi - axis_lo, 0.1)
-    axis_lo = max(0.0, axis_lo - 0.1 * span)
-    axis_hi = axis_hi + 0.1 * span
+    # Build display labels: append "(N<10)" annotation for low_power rows,
+    # "(no data)" for missing, "(suppressed)" for CPRD-suppressed.
+    def _annotated_label(r):
+        base = str(r["label"])
+        pc = r.get("power_class", "ok")
+        if pc == "low_power":
+            return f"{base}  (low precision)"
+        if pc == "no_data":
+            return f"{base}  (no data)"
+        if pc == "suppressed":
+            return f"{base}  (<{EVENTS_DISCLOSURE} events; suppressed)"
+        return base
+    chart_df["display_label"] = chart_df.apply(_annotated_label, axis=1)
 
-    # Precompute bar colour per row rather than nesting alt.condition() --
-    # altair v6 rejects a nested condition as the if_false branch and
-    # raises an opaque error inside _condition_to_selection. We just put
-    # the chosen colour into a column and let altair read it directly.
-    BAR_COLOR_REF = "#bbbbbb"      # reference row (grey)
-    BAR_COLOR_ABOVE = "#2a6f97"    # IRR >= 1 (navy)
-    BAR_COLOR_BELOW = "#99582a"    # IRR < 1 (warm brown)
+    # Auto-range the x-axis from CIs of rows that actually have data.
+    finite_lo = chart_df["lo"].dropna()
+    finite_hi = chart_df["hi"].dropna()
+    if finite_lo.empty or finite_hi.empty:
+        # Nothing to chart -- but we still render the y-axis so the
+        # missing-data state is visible. Default range around 1.0.
+        axis_lo, axis_hi = 0.5, 2.0
+    else:
+        lo_min = float(finite_lo.min())
+        hi_max = float(finite_hi.max())
+        axis_lo = min(lo_min, 1.0)
+        axis_hi = max(hi_max, 1.0)
+        span = max(axis_hi - axis_lo, 0.1)
+        axis_lo = max(0.0, axis_lo - 0.1 * span)
+        axis_hi = axis_hi + 0.1 * span
+
+    # Colour policy. Reference is grey; bars >=1 are navy; bars <1 are
+    # warm brown; low_power versions are paler shades of the same.
+    # no_data and suppressed rows have NaN IRR so no bar is drawn -- the
+    # colour assignment is irrelevant for those rows.
+    COLOR_REF        = "#bbbbbb"
+    COLOR_ABOVE      = "#2a6f97"   # navy
+    COLOR_ABOVE_LOW  = "#9ec5dc"   # pale navy (low_power)
+    COLOR_BELOW      = "#99582a"   # warm brown
+    COLOR_BELOW_LOW  = "#d8b89b"   # pale warm brown (low_power)
+    COLOR_NA         = "#dddddd"   # very pale grey (placeholder)
 
     def _row_color(r):
+        pc = r.get("power_class", "ok")
         if r["is_ref"]:
-            return BAR_COLOR_REF
-        return BAR_COLOR_ABOVE if r["IRR"] >= 1.0 else BAR_COLOR_BELOW
+            return COLOR_REF
+        if pc in ("no_data", "suppressed"):
+            return COLOR_NA
+        irr = r["IRR"]
+        if pd.isna(irr):
+            return COLOR_NA
+        if pc == "low_power":
+            return COLOR_ABOVE_LOW if irr >= 1.0 else COLOR_BELOW_LOW
+        return COLOR_ABOVE if irr >= 1.0 else COLOR_BELOW
 
     chart_df["bar_color"] = chart_df.apply(_row_color, axis=1)
 
+    # Bar height: 32-40 px per row, with a generous floor so a 2-row
+    # chart (e.g. SEX gradient) doesn't feel cramped.
+    BAR_SIZE = 18              # bar thickness in px
+    ROW_HEIGHT = 42            # vertical slot per row
+    chart_height = max(160, ROW_HEIGHT * len(chart_df))
+
     import altair as alt
     x_scale = alt.Scale(domain=[axis_lo, axis_hi], nice=False)
+
+    # Y axis: explicit category list so altair preserves our ordering.
+    y_sort = chart_df["display_label"].tolist()
     base = alt.Chart(chart_df).encode(
-        y=alt.Y("label:N", sort=None, title=None),
+        y=alt.Y("display_label:N", sort=y_sort, title=None,
+                axis=alt.Axis(labelLimit=380, labelPadding=6)),
     )
-    bars = base.mark_bar(size=18).encode(
-        x=alt.X("bar_start:Q", scale=x_scale,
-                title="Incidence rate ratio (reference = 1.0)"),
-        x2="bar_end:Q",
-        color=alt.Color("bar_color:N", scale=None, legend=None),
-        tooltip=[
-            alt.Tooltip("label:N", title="Group"),
-            alt.Tooltip("IRR:Q", format=".2f"),
-            alt.Tooltip("lo:Q", format=".2f", title="95% CI lower"),
-            alt.Tooltip("hi:Q", format=".2f", title="95% CI upper"),
-        ],
-    )
-    errors = base.mark_rule(color="#1f3147", strokeWidth=1.5).encode(
-        x=alt.X("lo:Q", scale=x_scale, title=""),
-        x2="hi:Q",
-    )
-    error_caps = base.mark_tick(color="#1f3147", thickness=1.5,
-                                size=8).encode(
-        x=alt.X("lo:Q", scale=x_scale, title=""),
-    ) + base.mark_tick(color="#1f3147", thickness=1.5, size=8).encode(
-        x=alt.X("hi:Q", scale=x_scale, title=""),
-    )
+    # Only emit bar / error marks for rows with valid IRR.
+    bar_df = chart_df[chart_df["IRR"].notna()].copy()
+    error_df = chart_df[chart_df["lo"].notna() & chart_df["hi"].notna()].copy()
+    layers = []
+    if not bar_df.empty:
+        bars = alt.Chart(bar_df).mark_bar(size=BAR_SIZE).encode(
+            y=alt.Y("display_label:N", sort=y_sort, title=None,
+                    axis=alt.Axis(labelLimit=380, labelPadding=6)),
+            x=alt.X("bar_start:Q", scale=x_scale,
+                    title="Incidence rate ratio (reference = 1.0)"),
+            x2="bar_end:Q",
+            color=alt.Color("bar_color:N", scale=None, legend=None),
+            tooltip=[
+                alt.Tooltip("label:N", title="Group"),
+                alt.Tooltip("IRR:Q", format=".2f"),
+                alt.Tooltip("lo:Q", format=".2f", title="95% CI lower"),
+                alt.Tooltip("hi:Q", format=".2f", title="95% CI upper"),
+                alt.Tooltip("num_events:Q", title="Events (this group)",
+                            format=",d"),
+                alt.Tooltip("ref_events:Q", title="Events (reference)",
+                            format=",d"),
+                alt.Tooltip("power_class:N", title="Precision tier"),
+            ],
+        )
+        layers.append(bars)
+    if not error_df.empty:
+        errors = alt.Chart(error_df).mark_rule(
+            color="#1f3147", strokeWidth=1.5).encode(
+            y=alt.Y("display_label:N", sort=y_sort, title=None),
+            x=alt.X("lo:Q", scale=x_scale, title=""),
+            x2="hi:Q",
+        )
+        error_caps_lo = alt.Chart(error_df).mark_tick(
+            color="#1f3147", thickness=1.5, size=8).encode(
+            y=alt.Y("display_label:N", sort=y_sort, title=None),
+            x=alt.X("lo:Q", scale=x_scale, title=""),
+        )
+        error_caps_hi = alt.Chart(error_df).mark_tick(
+            color="#1f3147", thickness=1.5, size=8).encode(
+            y=alt.Y("display_label:N", sort=y_sort, title=None),
+            x=alt.X("hi:Q", scale=x_scale, title=""),
+        )
+        layers.extend([errors, error_caps_lo, error_caps_hi])
+
     refline = alt.Chart(pd.DataFrame({"x": [1.0]})).mark_rule(
         strokeDash=[4, 4], color="#666").encode(
         x=alt.X("x:Q", scale=x_scale))
-    chart = (bars + errors + error_caps + refline).properties(
-        title=title, height=max(120, 36 * len(chart_df))
+    layers.append(refline)
+
+    # A "ghost" base layer that just renders the y-axis for every row,
+    # even rows with no bar. This is what makes empty rows appear.
+    yaxis_only = alt.Chart(chart_df).mark_point(opacity=0).encode(
+        y=alt.Y("display_label:N", sort=y_sort, title=None,
+                axis=alt.Axis(labelLimit=380, labelPadding=6)),
+        x=alt.X("bar_start:Q", scale=x_scale,
+                title="Incidence rate ratio (reference = 1.0)"),
     )
+    layers.insert(0, yaxis_only)
+
+    chart = alt.layer(*layers).properties(title=title, height=chart_height)
     st.altair_chart(chart, use_container_width=True)
+
+    # Footnote describing the three-tier suppression policy.
+    has_lowpower  = (chart_df["power_class"] == "low_power").any()
+    has_nodata    = (chart_df["power_class"] == "no_data").any()
+    has_suppress  = (chart_df["power_class"] == "suppressed").any()
+    parts = []
     if reference_label:
-        st.caption(f"Reference: **{reference_label}** (IRR = 1.0 by "
-                   "definition). Whiskers show the 95% confidence interval.")
+        parts.append(
+            f"Reference: **{reference_label}** (IRR = 1.0 by definition). "
+            "Whiskers show the 95% confidence interval."
+        )
+    notes = []
+    if has_lowpower:
+        notes.append(
+            f"pale bars indicate fewer than {EVENTS_RELIABLE} events on at "
+            "least one side and should be interpreted with caution"
+        )
+    if has_suppress:
+        notes.append(
+            f"groups with fewer than {EVENTS_DISCLOSURE} events on either "
+            "side are suppressed under the CPRD disclosure rule and have "
+            "no bar drawn"
+        )
+    if has_nodata:
+        notes.append(
+            "groups with no rows in the deposit (e.g. excluded from this "
+            "stratification) appear as empty rows"
+        )
+    if notes:
+        parts.append("Notes: " + "; ".join(notes) + ".")
+    if parts:
+        st.caption(" ".join(parts))
 
 
 def make_table_display(table: pd.DataFrame) -> pd.DataFrame:
     """Format the numeric table for display: rates rounded, p-values
-    rendered, ordering preserved."""
+    rendered, ordering preserved. Adds a 'Note' column reflecting the
+    three-tier suppression policy: rows where data is missing entirely,
+    suppressed under the CPRD <5-event rule, or shown with reduced
+    statistical precision are flagged accordingly."""
     if table.empty:
         return table
     show = table.copy()
-    show["IRR"] = show["irr"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+    show["IRR"] = show["irr"].apply(
+        lambda x: f"{x:.2f}" if pd.notna(x) else "\u2014")
     show["95% CI"] = show.apply(
         lambda r: (f"{r['lower_ci']:.2f}\u2013{r['upper_ci']:.2f}"
-                   if pd.notna(r["lower_ci"]) else "—"),
+                   if pd.notna(r["lower_ci"]) else "\u2014"),
         axis=1)
     show["p"] = show["p_value"].apply(
         lambda p: ("<0.001" if pd.notna(p) and p < 0.001
-                   else (f"{p:.3f}" if pd.notna(p) else "—")))
+                   else (f"{p:.3f}" if pd.notna(p) else "\u2014")))
     show["Rate / 100k PY"] = show["incidence_rate"].apply(
-        lambda x: f"{x:,.1f}" if pd.notna(x) else "—")
-    show["Events"] = show["num_events"].astype(int).map(lambda x: f"{x:,}")
-    show["Person-years"] = show["num_pt"].apply(lambda x: f"{x:,.0f}")
+        lambda x: f"{x:,.1f}" if pd.notna(x) else "\u2014")
+    show["Events"] = show["num_events"].apply(
+        lambda x: f"{int(x):,}" if pd.notna(x) else "\u2014")
+    show["Person-years"] = show["num_pt"].apply(
+        lambda x: f"{x:,.0f}" if pd.notna(x) else "\u2014")
+
+    # Render the suppression/precision note. status_note is preferred (set
+    # by gradient_irr_table); fall back to power_class for older tables.
+    def _note(r):
+        if "status_note" in r and isinstance(r.get("status_note"), str) and r["status_note"]:
+            return r["status_note"]
+        pc = r.get("power_class", "")
+        if pc == "low_power":
+            return f"lower precision (<{EVENTS_RELIABLE} events on at least one side)"
+        if pc == "suppressed":
+            return f"suppressed (<{EVENTS_DISCLOSURE} events; CPRD rule)"
+        if pc == "no_data":
+            return "no data in deposit"
+        if pc == "reference":
+            return "reference group"
+        return ""
+    show["Note"] = show.apply(_note, axis=1)
+
     cols = ["label", "Events", "Person-years", "Rate / 100k PY",
-            "IRR", "95% CI", "p"]
+            "IRR", "95% CI", "p", "Note"]
     show = show[cols].rename(columns={"label": "Group"})
     return show
 
@@ -1009,14 +1210,18 @@ else:  # mode == "history"
     st.markdown(f"**Trajectory:** {traj_full}")
     st.markdown(f"**Demographic group:** {fixed_label}")
 
-    # Headline contrast: full vs parent (drop earliest)
-    if n_full < 10 or n_par < 10:
+    # Headline contrast: full vs parent (drop earliest).
+    # Three-tier suppression policy: <5 events on either side -> suppress;
+    # 5..9 on either side -> show with a low-precision caveat; >=10 -> normal.
+    headline_class = classify_cell(n_full, n_par)
+    if headline_class == "suppressed":
         st.markdown(
-            '<div class="sparse">Too few events in this group to compute a '
-            f"rate ratio reliably (full sequence: {int(n_full):,} events; "
-            f"parent sub-sequence: {int(n_par):,} events; threshold is "
-            "10 on each side). Try a broader group or a different "
-            "trajectory.</div>",
+            '<div class="sparse">Too few events in this group to display a '
+            f"rate ratio (full sequence: {int(n_full):,} events; parent "
+            f"sub-sequence: {int(n_par):,} events). Cells with fewer than "
+            f"{EVENTS_DISCLOSURE} events on either side are suppressed "
+            "under the CPRD disclosure rule. Try a broader group or a "
+            "different trajectory.</div>",
             unsafe_allow_html=True)
     else:
         r1 = irr_ci(n_full, t_full, n_par, t_par)
@@ -1048,6 +1253,15 @@ else:  # mode == "history"
             st.markdown(f'<div class="metric-big">{pstr1}</div>',
                         unsafe_allow_html=True)
             st.caption("p-value (unadjusted)")
+
+        if headline_class == "low_power":
+            st.markdown(
+                '<div class="caveat">Lower precision: at least one side '
+                f"has fewer than {EVENTS_RELIABLE} events "
+                f"(full sequence: {int(n_full):,}; parent: {int(n_par):,}). "
+                "The point estimate is reported but the Wald 95% CI may be "
+                "wide and asymmetric \u2014 interpret with caution.</div>",
+                unsafe_allow_html=True)
 
         st.caption(
             f"Underlying rates: **{traj_full}** \u2014 "
@@ -1096,12 +1310,14 @@ else:  # mode == "history"
                 df_short_fixed = apply_fix_selections(df_short, fix_chosen)
                 n_sh = float(df_short_fixed["numerator"].fillna(0).sum())
                 t_sh = float(df_short_fixed["denominator"].fillna(0).sum())
-                if n_full < 10 or n_sh < 10:
+                endpoint_class = classify_cell(n_full, n_sh)
+                if endpoint_class == "suppressed":
                     st.markdown(
-                        '<div class="sparse">Too few events to compute this '
+                        '<div class="sparse">Too few events to display this '
                         f"contrast (full sequence: {int(n_full):,}; "
-                        f"endpoint alone: {int(n_sh):,}; threshold is 10 on "
-                        "each side).</div>",
+                        f"endpoint alone: {int(n_sh):,}). Cells with fewer "
+                        f"than {EVENTS_DISCLOSURE} events on either side are "
+                        "suppressed under the CPRD disclosure rule.</div>",
                         unsafe_allow_html=True)
                 else:
                     r2 = irr_ci(n_full, t_full, n_sh, t_sh)
@@ -1130,6 +1346,13 @@ else:  # mode == "history"
                         st.markdown(f'<div class="metric-big">{pstr2}</div>',
                                     unsafe_allow_html=True)
                         st.caption("p-value (unadjusted)")
+                    if endpoint_class == "low_power":
+                        st.markdown(
+                            '<div class="caveat">Lower precision: at least '
+                            f"one side has fewer than {EVENTS_RELIABLE} "
+                            f"events (full: {int(n_full):,}; endpoint alone: "
+                            f"{int(n_sh):,}). Interpret with caution.</div>",
+                            unsafe_allow_html=True)
                     st.caption(
                         f"Underlying rate of **{endpoint}** alone: "
                         f"{rate_sh:,.1f} per 100,000 PY ({int(n_sh):,} "
