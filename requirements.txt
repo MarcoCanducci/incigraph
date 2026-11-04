@@ -22,4 +22,4 @@ fsspec>=2024.2
 aiohttp>=3.9
 
 # Install the InciGraph package itself from the repo root:
-.
+-e .

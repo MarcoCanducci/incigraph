@@ -1,12 +1,14 @@
 """Disease index <-> name mapping for InciGraph.
 
-The InciGraph workbooks identify diseases by 1-based integer indices (1..64).
+The InciGraph workbooks identify diseases by 1-based integer indices (1..63; v2 release,
+the duplicate ENDOMETRIOSIS_V2 code is merged, so indices differ from the v1 deposit
+from 54 onwards).
 Disease N is the disease whose `BD_MEDI:NAME...:N` column appears at position
 N+K in each workbook (where K is the number of stratification key columns).
 
 This module exposes:
-  DISEASE_NAMES         : the canonical 64-element list, position N-1 = disease N
-  N_DISEASES            : 64
+  DISEASE_NAMES         : the   canonical 63-element list, position N-1 = disease N
+    N_DISEASES            : 63
   short_name(raw)       : 'BD_MEDI:TYPE2DIABETES_BHAM_CAM:8' -> 'TYPE2DIABETES'
   decode_sequence(seq)  : "0 3 8" -> "HYPERTENSION -> T2D"
   encode_sequence(names): inverse of decode_sequence (lookup by short name)
@@ -43,13 +45,12 @@ DISEASE_NAMES: list[str] = [
     "DOWNS",                                                             # 41-45
     "PERNICIOUS_ANAEMIA", "PSORIASIS", "PSORIATIC_ARTHRITIS", "ILD",
     "PTSD",                                                              # 46-50
-    "IBS", "HEARING_LOSS", "LEARNING_DISABILITY", "ENDOMETRIOSIS_V2",
-    "PCOS",                                                              # 51-55
-    "SICKLE_CELL", "HAEMOCHROMATOSIS", "STROKE", "IHD", "DRUG_ALCOHOL",   # 56-60
-    "IBD", "HAEM_CANCER", "BRONCHIECTASIS", "FIBROMYALGIA_CFS",          # 61-64
+    "IBS", "HEARING_LOSS", "LEARNING_DISABILITY", "PCOS",                # 51-54
+    "SICKLE_CELL", "HAEMOCHROMATOSIS", "STROKE", "IHD", "DRUG_ALCOHOL",   # 55-59
+    "IBD", "HAEM_CANCER", "BRONCHIECTASIS", "FIBROMYALGIA_CFS",          # 60-63
 ]
 N_DISEASES = len(DISEASE_NAMES)
-assert N_DISEASES == 64, "DISEASE_NAMES must have exactly 64 entries"
+assert N_DISEASES == 63, "DISEASE_NAMES must have exactly 63 entries"
 
 # Inverse lookup, built once. We normalise on uppercase so casing differences
 # in user input don't matter.

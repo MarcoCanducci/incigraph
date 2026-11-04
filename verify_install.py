@@ -213,8 +213,8 @@ def check_api_smoke(parquet_dir: Path) -> bool:
         fail(f"load_metadata() raised: {e}")
         return False
     n_l1 = int((meta["sequence_length"] == 1).sum())
-    if n_l1 != 64:
-        fail(f"expected 64 length-1 sequences in metadata; got {n_l1}")
+    if n_l1 != 63:
+        fail(f"expected 63 length-1 sequences in metadata; got {n_l1}")
         return False
     info(f"metadata: {len(meta):,} unique sequences "
          f"(L1={n_l1}, L2={int((meta['sequence_length']==2).sum()):,}, "

@@ -20,9 +20,9 @@ from incigraph.disease_index import (
 
 
 class TestCanonicalList:
-    def test_has_64_diseases(self):
-        assert N_DISEASES == 64
-        assert len(DISEASE_NAMES) == 64
+    def test_has_63_diseases(self):
+        assert N_DISEASES == 63
+        assert len(DISEASE_NAMES) == 63
 
     def test_known_position_anchors(self):
         """A few positions are anchored to specific diseases in the
@@ -39,9 +39,10 @@ class TestCanonicalList:
         assert DISEASE_NAMES[22] == "ASTHMA"
         assert DISEASE_NAMES[23] == "COPD"
         assert DISEASE_NAMES[29] == "OSTEOARTHRITIS"
-        assert DISEASE_NAMES[53] == "ENDOMETRIOSIS_V2"  # V2 disambiguation
-        assert DISEASE_NAMES[55] == "SICKLE_CELL"
-        assert DISEASE_NAMES[59] == "DRUG_ALCOHOL"
+        assert DISEASE_NAMES[36] == "ENDOMETRIOSIS"
+        assert DISEASE_NAMES[53] == "PCOS"
+        assert DISEASE_NAMES[54] == "SICKLE_CELL"
+        assert DISEASE_NAMES[58] == "DRUG_ALCOHOL"
 
     def test_no_duplicates(self):
         """Every disease name must be unique -- otherwise sequence

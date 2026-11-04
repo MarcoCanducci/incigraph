@@ -104,12 +104,12 @@ st.markdown(
 # Streamlit's @st.cache_data wraps the actual reads, so repeated queries
 # against the same sequence are instant (the row-group bytes are cached).
 
-ZENODO_RECORD_ID = "20417249"
+ZENODO_RECORD_ID = "23947638"
 ZENODO_FILES = {
-    "incigraph_L1.parquet":       "08dfb8d2842513a6cfc761a9b1307fc9",
-    "incigraph_L2.parquet":       "7884588e7b267ee01cc751d7839181ff",
-    "incigraph_L3.parquet":       "e924a952e9db99bdcfa2a66824464170",
-    "incigraph_metadata.parquet": "8d0b7ae100db52abacf94bf358b8a1bf",
+    "incigraph_L1.parquet":       "3bd06da9380ab23f307e79c8172c86ca",
+    "incigraph_L2.parquet":       "6cb80938e515f79c85383f46a53d22e3",
+    "incigraph_L3.parquet":       "56f6a9027407bc015b34350662d0260c",
+    "incigraph_metadata.parquet": "81b76762ad476630dffa5ef8ba1997fd",
 }
 
 

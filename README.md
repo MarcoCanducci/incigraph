@@ -27,7 +27,7 @@ Three things, in order of expected use:
 pip install -e .
 
 # 2. Download the data deposit (one-time, ~110 MB)
-#    From Zenodo: https://zenodo.org/record/20417249
+#    From Zenodo: https://doi.org/10.5281/zenodo.23947638
 
 #    Expand into ./incigraph_data/
 ls incigraph_data/
@@ -136,7 +136,7 @@ If you use InciGraph in academic work, please cite both the data deposit and the
   author    = {[authors]},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.20417249}
+  doi       = {10.5281/zenodo.23947638}
 }
 ```
 
@@ -186,9 +186,9 @@ ig.set_data_dir('./incigraph_data')
 # Stratifications available
 print('Stratifications:', ig.available_stratifications())
 
-# 64 diseases in metadata
+# 63 diseases in metadata
 m = ig.load_metadata()
-assert len(m[m.sequence_length == 1]) == 64
+assert len(m[m.sequence_length == 1]) == 63
 print('Metadata OK:', len(m), 'unique sequences')
 
 # A specific query that should always succeed on a complete parquet
