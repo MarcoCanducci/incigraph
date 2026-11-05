@@ -24,8 +24,8 @@ keywords:
 license: MIT
 repository-code: "https://github.com/<your-org>/incigraph"
 url: "https://incigraph.netlify.app/"
-version: 0.1.0
-date-released: 2026-05-27
+version: 2.0.0
+date-released: 2026-11-05
 
 # Once the manuscript is published, fill in `preferred-citation` so
 # citation managers prefer the journal reference over the software

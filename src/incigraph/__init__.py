@@ -43,7 +43,7 @@ from .api import (
 from .disease_index import DISEASE_NAMES, N_DISEASES
 from .ci import poisson_ci, irr_ci
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "set_data_dir",

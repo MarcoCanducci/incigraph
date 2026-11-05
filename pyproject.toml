@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "incigraph"
-version = "0.1.0"
+version = "2.0.0"
 description = "Open infrastructure for ordered, intersectional, multimorbidity incidence rates in UK primary care"
 readme = "README.md"
 requires-python = ">=3.10"
