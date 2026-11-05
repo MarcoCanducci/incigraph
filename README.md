@@ -4,7 +4,7 @@
 [![Data License: CC BY 4.0](https://img.shields.io/badge/Data%20License-CC%20BY%204.0-lightgrey.svg)](DATA_LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 
-**InciGraph is open infrastructure for hypothesis generation and service-planning research on multimorbidity.** It is a precomputed library of ~50 million incidence-rate estimates of ordered disease trajectories in UK primary care, with intersectional demographic stratification, covering 63 long-term conditions and ~14 million patients in CPRD data.
+**InciGraph is open infrastructure for hypothesis generation and service-planning research on multimorbidity.** It is a precomputed library of 45.2 million incidence-rate estimates of ordered disease trajectories in UK primary care, with intersectional demographic stratification, covering 63 long-term conditions and 13.9 million patients in CPRD Aurum data.
 
 A web interface for browsing the estimates lives at <https://incigraph.netlify.app/>. This repository provides programmatic access via a Python package plus the validation pipeline that produced the headline arithmetic guarantees in the accompanying manuscript.
 
@@ -26,7 +26,7 @@ Three things, in order of expected use:
 # 1. Install the package
 pip install -e .
 
-# 2. Download the data deposit (one-time, ~110 MB)
+# 2. Download the data deposit (one-time, ~50 MB)
 #    From Zenodo: https://doi.org/10.5281/zenodo.23947638
 
 #    Expand into ./incigraph_data/
@@ -124,16 +124,16 @@ If you use InciGraph in academic work, please cite the paper, the data deposit a
 
 ```bibtex
 @article{incigraph2026,
-  title   = {[manuscript title]},
-  author  = {[authors]},
-  journal = {PLOS Digital Health},
+  title   = {InciGraph: An interactive tool for exploring intersectional demographic variation in temporal, population-wide disease progression patterns},
+  author  = {Canducci, Marco and Cooper, Jennifer and Hathaway, Eleanor and Morris, Simon George and Nok, Chris Kwan and Haroon, Shamil and Thayakaran, Rasiah and Acharya, Aditya and Crowe, Francesca and Nirantharakumar, Krishnarajah and Jackson, Thomas and Tino, Peter},
+  journal = {JMIR},
   year    = {2026},
   doi     = {10.xxxx/...}
 }
 
 @dataset{incigraph_data_2026,
   title     = {InciGraph parquet deposit},
-  author    = {[authors]},
+  author    = {Canducci, Marco and Tino, Peter and others},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.23947638}
@@ -141,7 +141,7 @@ If you use InciGraph in academic work, please cite the paper, the data deposit a
 
 @software{incigraph_code_2026,
   title     = {InciGraph},
-  author    = {[authors]},
+  author    = {Canducci, Marco and Cooper, Jennifer and Hathaway, Eleanor and Morris, Simon George and Nok, Chris Kwan and Haroon, Shamil and Thayakaran, Rasiah and Acharya, Aditya and Crowe, Francesca and Nirantharakumar, Krishnarajah and Jackson, Thomas and Tino, Peter},
   year      = {2026},
   version   = {2.0.0},
   publisher = {Zenodo},
