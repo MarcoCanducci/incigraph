@@ -4,7 +4,7 @@ title: "InciGraph"
 abstract: >-
   Open infrastructure for ordered, intersectional, multimorbidity
   incidence rates in UK primary care. Provides ~50 million precomputed
-  incidence-rate estimates across 64 long-term conditions, ordered
+  incidence-rate estimates across 63 long-term conditions, ordered
   trajectories of length 1-3, and 15 demographic stratification schemes,
   derived from CPRD data on ~14 million patients.
 type: software
@@ -22,8 +22,9 @@ keywords:
   - health-inequalities
   - CPRD
 license: MIT
-repository-code: "https://github.com/<your-org>/incigraph"
+repository-code: "https://github.com/MarcoCanducci/incigraph"
 url: "https://incigraph.netlify.app/"
+doi: "10.5281/zenodo.23975140"
 version: 2.0.0
 date-released: 2026-11-05
 

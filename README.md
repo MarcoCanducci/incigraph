@@ -4,7 +4,7 @@
 [![Data License: CC BY 4.0](https://img.shields.io/badge/Data%20License-CC%20BY%204.0-lightgrey.svg)](DATA_LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 
-**InciGraph is open infrastructure for hypothesis generation and service-planning research on multimorbidity.** It is a precomputed library of ~50 million incidence-rate estimates of ordered disease trajectories in UK primary care, with intersectional demographic stratification, covering 64 long-term conditions and ~14 million patients in CPRD data.
+**InciGraph is open infrastructure for hypothesis generation and service-planning research on multimorbidity.** It is a precomputed library of ~50 million incidence-rate estimates of ordered disease trajectories in UK primary care, with intersectional demographic stratification, covering 63 long-term conditions and ~14 million patients in CPRD data.
 
 A web interface for browsing the estimates lives at <https://incigraph.netlify.app/>. This repository provides programmatic access via a Python package plus the validation pipeline that produced the headline arithmetic guarantees in the accompanying manuscript.
 
@@ -64,7 +64,7 @@ incigraph/
 ├── src/incigraph/             ← The Python API (the importable package)
 │   ├── api.py                 ← Seven public functions
 │   ├── ci.py                  ← Poisson and IRR confidence intervals
-│   └── disease_index.py       ← The 64-disease canonical naming
+│   └── disease_index.py       ← The 63-disease canonical naming
 │
 ├── scripts/                   ← Command-line tools
 │   ├── collect_incigraph.py   ← Pull a tidy CSV for one sequence
@@ -120,7 +120,7 @@ These three commands cover unit-level correctness, integration with the parquet,
 
 ## Citation
 
-If you use InciGraph in academic work, please cite both the data deposit and the paper:
+If you use InciGraph in academic work, please cite the paper, the data deposit and the software:
 
 ```bibtex
 @article{incigraph2026,
@@ -137,6 +137,16 @@ If you use InciGraph in academic work, please cite both the data deposit and the
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.23947638}
+}
+
+@software{incigraph_code_2026,
+  title     = {InciGraph},
+  author    = {[authors]},
+  year      = {2026},
+  version   = {2.0.0},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.23975140},
+  url       = {https://github.com/MarcoCanducci/incigraph}
 }
 ```
 
