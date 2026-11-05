@@ -1,0 +1,110 @@
+{
+ "config": {
+  "STUDY_START": "2000-01-01",
+  "STUDY_END": "2020-12-31",
+  "AGE_BREAKS": [
+   "0",
+   "16",
+   "30",
+   "40",
+   "50",
+   "60",
+   "70",
+   "80",
+   "inf"
+  ],
+  "MIN_CELL": 5,
+  "MERGE_ENDOMETRIOSIS": true,
+  "pandas": "2.3.3",
+  "numpy": "2.0.2"
+ },
+ "patients_read": 28121517,
+ "unparseable_dates": {
+  "TRANSFER_DATE": 29,
+  "BD_MEDI:AF_BHAM_CAM:1": 2,
+  "BD_MEDI:STROKEUNSPECIFIED_BHAM_CAM:3": 1,
+  "BD_MEDI:HYPERTENSION_BHAM_CAM:5": 17,
+  "BD_MEDI:MINFARCTION_BHAM_CAM:6": 3,
+  "BD_MEDI:VALVULARDISEASES_BHAM_CAM:9": 1,
+  "BD_MEDI:DEPRESSION_BIRM_CAM:14": 4,
+  "BD_MEDI:ANXIETY_BIRM_CAM:15": 2,
+  "BD_MEDI:EATINGDISORDERS_BIRM_CAM:17": 1,
+  "BD_MEDI:SCHIZOPHRENIAMM:18": 3,
+  "BD_MEDI:SUBSTANCEMISUSE_BIRM_CAM:21": 2,
+  "BD_MEDI:PARKINSONS_BIRM_CAM:28": 1,
+  "BD_MEDI:EPILEPSY_BIRM_CAM:29": 2,
+  "BD_MEDI:ASTHMA_PUSHASTHMA:34": 22,
+  "BD_MEDI:COPD_BIRM_CAM:35": 2,
+  "BD_MEDI:ATOPICECZEMA_BIRM_CAM:39": 6,
+  "BD_MEDI:ALLERGICRHINITISCONJ_BIRM_CAM:40": 5,
+  "BD_MEDI:OSTEOPOROSIS_BIRM_CAM:42": 19,
+  "BD_MEDI:OSTEOARTHRITIS_MM_BIRM_CAM:43": 8,
+  "BD_MEDI:HYPOTHYROIDISM_DRAFT_V1_BIRM_CAM:52": 14,
+  "BD_MEDI:MENIERESDISEASE_BIRM_CAM:57": 1,
+  "BD_MEDI:PERIPHERAL_NEUROPATHY_BIRM_CAM:58": 1,
+  "BD_MEDI:PSORIASIS_BIRM_CAM:61": 9,
+  "BD_MEDI:PREVALENT_IBS_BIRM_CAM_V2:65": 1,
+  "BD_MEDI:ANY_DEAFNESS_HEARING_LOSS_BIRM_CAM_V2:66": 2,
+  "BD_MEDI:LEARNINGDISABILITY_BIRM_CAM_V2:67": 2
+ },
+ "diabetes_T1_and_T2_reassigned_to_T2": 46493,
+ "endometriosis_patients_after_merge": 209157,
+ "sex_missing_or_unknown_mapped_to_I": 0,
+ "ethnicity_missing_or_unknown_mapped_to_MISSING": 0,
+ "patients_absent_from_imd_file": 0,
+ "imd_values_outside_1_to_5_set_missing": 0,
+ "excluded": {
+  "no_index_date": 0,
+  "index_before_study_start": 0,
+  "exit_before_index": 1185013,
+  "missing_age": 0,
+  "condition_before_index": 13006367
+ },
+ "diagnoses_after_exit_ignored": 495812,
+ "patients_with_diagnoses_after_exit": 420878,
+ "patients_included": 13930137,
+ "age_band_label_mismatches": 522,
+ "age_band_label_mismatch_examples": {
+  "0-16": [
+   16.0
+  ],
+  "31-40": [
+   40.0
+  ],
+  "51-60": [
+   60.0
+  ],
+  "71-80": [
+   80.0
+  ]
+ },
+ "conditions": 63,
+ "load_seconds": 4260.1,
+ "analysis_cohort_file": "./incigraph_v2_output/internal/analysis_cohort.parquet",
+ "xlsx": {
+  "dir": "./incigraph_v2_output/xlsx_release",
+  "version": "release",
+  "engine": "xlsxwriter",
+  "files_written": 59550,
+  "cells_suppressed": 2731963
+ },
+ "same_day_diagnoses_not_counted_as_next": {
+  "level2": 328802,
+  "level3": 111024
+ },
+ "level1_first_condition_ties": {
+  "patients_with_first_condition": 3461378,
+  "patients_with_2plus_same_day_first_conditions": 156233
+ },
+ "checks": {
+  "cohorts": 3518,
+  "marginal_pairs_checked": 175900,
+  "level_links_checked": 3517
+ },
+ "rows_written": {
+  "3": 42662485,
+  "2": 2520114,
+  "1": 54558
+ },
+ "run_seconds": 863.8
+}
